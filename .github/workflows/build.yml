@@ -1,0 +1,107 @@
+# Builds one app per pushed app-* branch. The builder's server (aiappmaker-worker)
+# commits the app's data to job/ on that branch; this assembles the Android
+# project from template/ and publishes the APK or AAB as a release.
+#
+# Signing: the account's key is NEVER in this repo. The run proves who it is
+# with GitHub's OIDC token (repo + branch + commit, signed by GitHub) and the
+# server hands the key to this run only. Secrets are masked and the key file
+# lives in the runner's temp dir, deleted when the job ends.
+name: build
+
+on:
+  push:
+    branches: ["app-*"]
+
+permissions:
+  contents: write   # publish the release
+  id-token: write   # prove this run to the builder's server
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILDER: https://aiappmaker-worker.faisal5455.workers.dev
+  AUDIENCE: aiappmaker-builds
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare the app
+        run: node scripts/prepare.mjs
+
+      - name: Signing key
+        run: |
+          set -euo pipefail
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)
+          echo "::add-mask::$OIDC"
+          echo "OIDC=$OIDC" >> "$GITHUB_ENV"
+          curl -sS --fail-with-body -H "Authorization: Bearer $OIDC" "$BUILDER/ci/signing" -o "$RUNNER_TEMP/signing.json" || {
+            echo "::error::The builder did not hand over a signing key for this build."; cat "$RUNNER_TEMP/signing.json" 2>/dev/null | jq -r '.error // empty'; exit 1; }
+          for k in storePassword keyPassword; do echo "::add-mask::$(jq -r .$k "$RUNNER_TEMP/signing.json")"; done
+          jq -r .keystore "$RUNNER_TEMP/signing.json" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "SIGN_STORE_FILE=$RUNNER_TEMP/release.keystore"
+            echo "SIGN_STORE_PASSWORD=$(jq -r .storePassword "$RUNNER_TEMP/signing.json")"
+            echo "SIGN_KEY_ALIAS=$(jq -r .keyAlias "$RUNNER_TEMP/signing.json")"
+            echo "SIGN_KEY_PASSWORD=$(jq -r .keyPassword "$RUNNER_TEMP/signing.json")"
+          } >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/signing.json"
+
+      - name: Check the key
+        run: |
+          set -euo pipefail
+          keytool -list -v -keystore "$SIGN_STORE_FILE" -storepass "$SIGN_STORE_PASSWORD" -alias "$SIGN_KEY_ALIAS" > "$RUNNER_TEMP/key.txt" 2>&1 || {
+            echo "::error::The signing key or its password is wrong."; echo "KEY_ERROR=1" >> "$GITHUB_ENV"; exit 1; }
+          echo "KEY_SHA1=$(grep -m1 'SHA1:' "$RUNNER_TEMP/key.txt" | awk '{print $2}')" >> "$GITHUB_ENV"
+          echo "KEY_SHA256=$(grep -m1 'SHA256:' "$RUNNER_TEMP/key.txt" | awk '{print $2}')" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          TARGET=$(jq -r .target job/build.json)
+          FILE=$(jq -r .fileName job/build.json)
+          cd project
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          if [ "$TARGET" = "aab" ]; then
+            ./gradlew :app:bundleRelease --no-daemon --console=plain
+            cp app/build/outputs/bundle/release/app-release.aab "$GITHUB_WORKSPACE/out/$FILE"
+          else
+            ./gradlew :app:assembleRelease --no-daemon --console=plain
+            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/out/$FILE"
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}-$(jq -r .target job/build.json)"
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" out/* --target "$GITHUB_SHA" --title "$TAG" --notes "Build $(jq -r .buildId job/build.json)" --prerelease
+
+      - name: Report to the builder
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          [ "${KEY_ERROR:-}" = "1" ] && STATUS="key_error"
+          jq -n --arg status "$STATUS" --arg sha1 "${KEY_SHA1:-}" --arg sha256 "${KEY_SHA256:-}" \
+            '{status:$status, sha1:$sha1, sha256:$sha256}' > "$RUNNER_TEMP/report.json"
+          [ -n "${OIDC:-}" ] && curl -sS -X POST -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" \
+            --data @"$RUNNER_TEMP/report.json" "$BUILDER/ci/report" || true
+          rm -f "$RUNNER_TEMP/release.keystore"

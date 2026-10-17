@@ -1,0 +1,143 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as
+// assets/export/kt/NativeSecurity.kt.tmpl with only the package line swapped
+// (tools/sync_export_templates.sh).
+//
+// Biometric and the barcode scanner, both reached by REFLECTION.
+//
+// Neither library is referenced here. androidx.biometric (which also drags in
+// androidx.fragment) and Google's code scanner ship only with an export that
+// declared the matching capability, as BiometricSupport / BarcodeSupport in the
+// app's root package. Where an adapter is absent, the call answers
+// "unavailable" instead of the app failing to build or crashing.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.json.JSONObject
+
+/** The `native.*` calls this controller answers. */
+private val SECURITY_KINDS = setOf("biometric", "scanBarcode")
+
+class NativeSecurityController internal constructor(
+    private val context: Context,
+    private val onResult: (id: Int, resultJson: String) -> Unit,
+) {
+
+    fun handles(kind: String): Boolean = kind in SECURITY_KINDS
+
+    fun start(request: NativeUiRequest) {
+        when (request.kind) {
+            "biometric" -> biometric(request)
+            "scanBarcode" -> scanBarcode(request)
+            else -> onResult(request.id, "null")
+        }
+    }
+
+    private fun adapter(name: String): Any? = try {
+        Class.forName(context.packageName + "." + name)
+            .getDeclaredField("INSTANCE")
+            .get(null)
+    } catch (_: Throwable) {
+        null
+    }
+
+    // ---- Biometric ---------------------------------------------------
+
+    private fun biometric(request: NativeUiRequest) {
+        val support = adapter("BiometricSupport")
+        if (support == null) {
+            onResult(request.id, missing("biometric"))
+            return
+        }
+
+        val options = request.options
+        val callback: (Boolean, String) -> Unit = { ok, status ->
+            onResult(request.id, JSONObject().put("ok", ok).put("status", status).toString())
+        }
+
+        try {
+            support.javaClass
+                .getMethod(
+                    "authenticate",
+                    Context::class.java,
+                    String::class.java,
+                    String::class.java,
+                    String::class.java,
+                    Function2::class.java,
+                )
+                .invoke(
+                    support,
+                    context,
+                    options.optString("title"),
+                    options.optString("subtitle"),
+                    options.optString("description"),
+                    callback as Function2<Boolean, String, Unit>,
+                )
+        } catch (_: Throwable) {
+            onResult(request.id, JSONObject().put("ok", false).put("status", "unavailable").toString())
+        }
+    }
+
+    // ---- Barcode -----------------------------------------------------
+
+    private fun scanBarcode(request: NativeUiRequest) {
+        val support = adapter("BarcodeSupport")
+        if (support == null) {
+            onResult(request.id, missing("barcode"))
+            return
+        }
+
+        val callback: (String?, String?, String?) -> Unit = { value, format, error ->
+            onResult(
+                request.id,
+                when {
+                    error != null -> JSONObject().put("error", error).toString()
+                    // A plain cancel resolves null, which is what the page
+                    // checks for before doing anything with a scan.
+                    value == null -> "null"
+                    else -> JSONObject().put("value", value).put("format", format).toString()
+                },
+            )
+        }
+
+        try {
+            support.javaClass
+                .getMethod(
+                    "scan",
+                    Context::class.java,
+                    Boolean::class.java,
+                    Function3::class.java,
+                )
+                .invoke(
+                    support,
+                    context,
+                    request.options.optBoolean("autoZoom", true),
+                    callback as Function3<String?, String?, String?, Unit>,
+                )
+        } catch (_: Throwable) {
+            onResult(request.id, JSONObject().put("error", "unavailable").toString())
+        }
+    }
+
+    /** Says which capability is missing, rather than a bare "unavailable". */
+    private fun missing(capability: String): String = JSONObject()
+        .put("error", "unavailable")
+        .put(
+            "hint",
+            "Declare the $capability capability with set_permissions; it is not built in.",
+        )
+        .toString()
+}
+
+@Composable
+fun rememberNativeSecurity(
+    onResult: (id: Int, resultJson: String) -> Unit,
+): NativeSecurityController {
+    val context = LocalContext.current
+    return remember(context, onResult) { NativeSecurityController(context, onResult) }
+}

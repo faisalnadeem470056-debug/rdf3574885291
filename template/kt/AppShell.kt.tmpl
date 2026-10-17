@@ -1,0 +1,2032 @@
+package {{PACKAGE}}
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import android.util.Log
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.clickable
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.material3.MediumTopAppBar
+import androidx.compose.material3.TopAppBarScrollBehavior
+import androidx.compose.material3.rememberTopAppBarState
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+/** One screen opened with `native.navigate()`, sitting above the tab shell. */
+private data class PushedEntry(
+    val key: String,
+    val screen: AppScreen,
+    val titleOverride: String?,
+)
+
+/**
+ * A screen opened with `native.openSheet()`: the page designs the content, the
+ * shell presents it as a real bottom sheet (drag handle, scrim, back closes it,
+ * keyboard-aware). Its result resolves the opener's promise.
+ */
+private data class SheetEntry(
+    val key: String,
+    val screen: AppScreen,
+    /** JSON literal handed to the sheet by `native.sheetData()`. */
+    val dataJson: String,
+    /** 'half' | 'full' */
+    val size: String,
+    val requestId: Int,
+    val requester: WebView?,
+)
+
+/** A JSON literal for any value org.json hands back. */
+private fun jsonLiteral(value: Any?): String = when (value) {
+    null, JSONObject.NULL -> "null"
+    is String -> JSONObject.quote(value)
+    else -> value.toString()
+}
+
+/**
+ * The native shell: a real app bar, real bottom tabs and a real side menu
+ * around web content. Everything about the chrome comes from
+ * `assets/www/project.json`, so editing that file changes the app.
+ *
+ * Pushed screens are drawn over the tab shell rather than replacing it, so
+ * every tab's WebView stays attached and keeps its scroll position and page
+ * state -- screens are never reloaded.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppShell(manifest: AppManifest, server: AssetServer, storage: AppStorage) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val snackbars = remember { SnackbarHostState() }
+
+    val background = parseHexColor(manifest.theme.background, Color.White)
+    val tabScreens = remember(manifest) { manifest.tabScreens }
+
+    var tabIndex by remember { mutableStateOf(0) }
+    val titleOverrides = remember { mutableStateMapOf<String, String>() }
+    val stack = remember { mutableStateListOf<PushedEntry>() }
+
+    val tabViews = remember { mutableStateMapOf<String, WebView>() }
+    val pushedViews = remember { mutableStateMapOf<String, WebView>() }
+
+    // Each screen's WebView sits in one of these, so pull-to-refresh works and
+    // the view hierarchy stays the same shape on every screen.
+    // Screens whose page has loaded and can receive events.
+    val readyScreens = remember { mutableStateListOf<String>() }
+    val pendingEvents = remember { mutableStateListOf<Pair<String, String>>() }
+
+    val refreshHosts = remember { mutableStateMapOf<String, SwipeRefreshLayout>() }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val hasDrawer = manifest.drawer.enabled && manifest.drawer.items.isNotEmpty()
+
+    // Native search in the app bar: open state and the live query.
+    var searchOpen by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    // Screens that asked to handle back themselves (an unsaved form).
+    val backIntercepted = remember { mutableStateMapOf<String, Boolean>() }
+
+    // The large app bar collapses with the page's scroll (the WebView's own
+    // scroll listener, since a WebView does not take part in Compose nested scroll).
+    // One bar, re-positioned from each tab's last offset on a tab switch.
+    val appBarState = rememberTopAppBarState()
+    val collapse = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(appBarState)
+    val scrollOffsets = remember { mutableMapOf<String, Float>() }
+
+    // Tab badges set by pages (a cart count), keyed by screen id.
+    val badges = remember { mutableStateMapOf<String, String>() }
+
+    // The open sheet, if any, and its WebView (not state: created on demand).
+    var sheet by remember { mutableStateOf<SheetEntry?>(null) }
+    val sheetViews = remember { mutableMapOf<String, WebView>() }
+
+
+    // Native components a page opened. Queued rather than replaced: two awaits
+    // in a row must both get an answer, or the second one hangs.
+    val uiQueue = remember { mutableStateListOf<Pair<NativeUiRequest, WebView?>>() }
+    var loadingMessage by remember { mutableStateOf<String?>(null) }
+
+    val pending = uiQueue.firstOrNull()
+    val styles = resolveComponentStyles(
+        values = manifest.components,
+        // Per-call overrides win, so one screen can dress a dialog differently
+        // without changing the app's own look.
+        override = pending?.first?.style,
+        accent = manifest.theme.accent,
+        surface = manifest.theme.surface,
+        background = manifest.theme.background,
+        text = manifest.theme.text,
+        appBarBackground = manifest.theme.resolvedAppBarBackground,
+        appBarForeground = manifest.theme.resolvedAppBarForeground,
+    )
+
+    fun resolve(id: Int, resultJson: String, target: WebView?) {
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $resultJson);", null)
+    }
+
+    // Media, files and sharing: Activity results, so they own their launchers
+    // and answer through the same channel as the dialogs.
+    val permissions = rememberNativePermissions()
+
+    // Events for watchers (native:location, native:network) go to the screen
+    // that is in front, which is the page that started the watch.
+    val emitEvent: (String, String) -> Unit = { event, detail ->
+        // A watcher's callback can arrive on any thread; a WebView call off the
+        // main thread crashes the process.
+        val view = if (stack.isEmpty()) {
+            tabViews[tabScreens.getOrNull(tabIndex)?.id.orEmpty()]
+        } else {
+            pushedViews[stack.last().key]
+        }
+        view?.evaluateJavascript(
+            "window.dispatchEvent(new CustomEvent('$event', { detail: $detail }));",
+            null,
+        )
+    }
+    val device = rememberNativeDevice(permissions, emitEvent) { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+    val notifications = rememberNativeNotifications(permissions, emitEvent) { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+    val (adsBridge, adUnits, ads) = rememberNativeAds(
+        enabled = manifest.ads.enabled,
+        testMode = manifest.ads.testMode,
+        banner = manifest.ads.bannerUnitId,
+        interstitial = manifest.ads.interstitialUnitId,
+        rewarded = manifest.ads.rewardedUnitId,
+    ) { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+
+    val app = rememberNativeApp { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+    val security = rememberNativeSecurity { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+    val media = rememberNativeMedia(permissions) { id, result ->
+        val target = uiQueue.firstOrNull { it.first.id == id }?.second
+        uiQueue.removeAll { it.first.id == id }
+        target?.evaluateJavascript("window.__resolve($id, $result);", null)
+    }
+
+    fun snack(text: String) {
+        if (text.isEmpty()) return
+        scope.launch {
+            snackbars.currentSnackbarData?.dismiss()
+            snackbars.showSnackbar(text)
+        }
+    }
+
+    fun notifyResume(screenId: String) {
+        val view = tabViews[screenId] ?: return
+        scope.launch { view.notifyResume(storage.asJsonObject()) }
+    }
+
+    fun push(screen: AppScreen, titleOverride: String? = null) {
+        stack.add(
+            PushedEntry(
+                key = "${screen.id}-${System.nanoTime()}",
+                screen = screen,
+                titleOverride = titleOverride,
+            ),
+        )
+    }
+
+    /** Pops the top pushed route and tells whatever is underneath to refresh. */
+    fun pop() {
+        val entry = stack.removeLastOrNull() ?: return
+        pushedViews.remove(entry.key)?.destroySafely()
+
+        val below = stack.lastOrNull()
+        if (below != null) {
+            pushedViews[below.key]?.let { view ->
+                scope.launch { view.notifyResume(storage.asJsonObject()) }
+            }
+        } else {
+            // The tab's WebView stayed alive while the pushed route was on top,
+            // so it has no idea anything changed. Without this, a screen that
+            // edits data leaves the list behind it stale.
+            tabScreens.getOrNull(tabIndex)?.let { notifyResume(it.id) }
+        }
+    }
+
+    fun closeSheet(result: Any?) {
+        val entry = sheet ?: return
+        sheet = null
+        entry.requester?.evaluateJavascript("window.__resolve(${entry.requestId}, ${jsonLiteral(result)});", null)
+        sheetViews.remove(entry.key)?.destroySafely()
+        // The sheet may have saved data: the screen underneath re-reads it, as
+        // when coming back from any other screen.
+        entry.requester?.let { view -> scope.launch { view.notifyResume(storage.asJsonObject()) } }
+    }
+
+    fun handleBridge(message: JSONObject, from: AppScreen, fromView: WebView? = null) {
+        when (message.optString("action")) {
+            "navigate" -> {
+                val target = manifest.screenById(message.optString("screen")) ?: return
+                push(target, if (message.isNull("title")) null else message.optString("title"))
+            }
+
+            "back" -> if (stack.isNotEmpty()) pop()
+
+            "selectTab" -> {
+                val index = message.optInt("index", 0)
+                if (index in tabScreens.indices) {
+                    tabIndex = index
+                    notifyResume(tabScreens[index].id)
+                }
+            }
+
+            "toast" -> snack(message.optString("message"))
+
+            "setTitle" -> {
+                val title = message.optString("title")
+                if (title.isNotEmpty()) titleOverrides[from.id] = title
+            }
+
+            // Written to disk immediately, so an abrupt kill cannot lose it.
+            "store" -> scope.launch {
+                storage.set(
+                    message.optString("key"),
+                    if (message.isNull("value")) null else message.optString("value"),
+                )
+            }
+
+            "openDrawer" -> if (hasDrawer) scope.launch { drawerState.open() }
+
+            "closeSheet" -> closeSheet(message.opt("result"))
+
+            // The page's own scroll report is for the builder's preview; here
+            // the WebView's native scroll listener drives the bar (webViewFor).
+            "scroll" -> Unit
+
+            "setBadge" -> {
+                val screen = message.optString("screen")
+                val value = message.optString("value")
+                if (value.isEmpty() || value == "0") badges.remove(screen) else badges[screen] = value
+            }
+
+            "closeDrawer" -> scope.launch { drawerState.close() }
+
+            "ready" -> if (from.id !in readyScreens) readyScreens.add(from.id)
+
+            "haptic" -> haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
+            "interceptBack" -> backIntercepted[from.id] = message.optBoolean("on", false)
+
+            "refreshDone" -> refreshHosts.values.forEach { it.isRefreshing = false }
+
+            // A native component that has to answer: dialog, sheet, picker.
+            "ui" -> {
+                val request = NativeUiRequest.fromBridge(message) ?: return
+                val asking = fromView
+                    ?: tabViews[from.id]
+                    ?: pushedViews[stack.lastOrNull()?.key.orEmpty()]
+
+                // A screen presented as a sheet. One at a time.
+                if (request.kind == "openSheet") {
+                    val target = manifest.screenById(request.options.optString("screen"))
+                    if (target == null || sheet != null) {
+                        resolve(request.id, "null", asking)
+                        return
+                    }
+                    sheet = SheetEntry(
+                        key = "sheet-${System.nanoTime()}",
+                        screen = target,
+                        dataJson = jsonLiteral(request.options.opt("data")),
+                        size = request.options.optString("size").ifEmpty { "half" },
+                        requestId = request.id,
+                        requester = asking,
+                    )
+                    return
+                }
+                if (request.kind == "sheetData") {
+                    resolve(request.id, sheet?.dataJson ?: "null", asking)
+                    return
+                }
+
+                if (request.kind == "snackbar") {
+                    // The shell owns the SnackbarHostState, so this one never
+                    // reaches NativeComponentHost.
+                    val options = request.options
+                    scope.launch {
+                        snackbars.currentSnackbarData?.dismiss()
+                        val result = snackbars.showSnackbar(
+                            message = options.optString("message"),
+                            actionLabel = options.optString("actionLabel").ifEmpty { null },
+                            withDismissAction = options.optBoolean("dismissable", false),
+                            duration = if (options.optString("actionLabel").isEmpty()) {
+                                SnackbarDuration.Short
+                            } else {
+                                SnackbarDuration.Long
+                            },
+                        )
+                        resolve(
+                            request.id,
+                            if (result == SnackbarResult.ActionPerformed) "true" else "false",
+                            asking,
+                        )
+                    }
+                    return
+                }
+
+                uiQueue.add(request to asking)
+
+                when {
+                    // Pickers and the share sheet are Activities, not
+                    // composables, so they start immediately instead of
+                    // waiting to be rendered.
+                    media.handles(request.kind) -> media.start(request)
+
+                    // Location, connectivity, clipboard, vibration and the
+                    // dial / SMS / mail / maps hand-offs.
+                    device.handles(request.kind) -> device.start(request)
+
+                    // Biometric and the barcode scanner.
+                    security.handles(request.kind) -> security.start(request)
+
+                    // Notifications, scheduling and keep-awake.
+                    notifications.handles(request.kind) -> notifications.start(request)
+
+                    // App info, secure storage, review and the store page.
+                    app.handles(request.kind) -> app.start(request)
+
+                    // Interstitial and rewarded ads.
+                    ads.handles(request.kind) -> ads.start(request)
+
+                    request.kind == "permissionStatus" -> resolve(
+                        request.id,
+                        permissionResultJson(permissions.state(request.options.optString("id"))),
+                        asking,
+                    )
+
+                    request.kind == "requestPermission" -> {
+                        val capability = request.options.optString("id")
+                        permissions.ensure(capability) {
+                            resolve(
+                                request.id,
+                                permissionResultJson(permissions.state(capability)),
+                                asking,
+                            )
+                        }
+                    }
+                }
+            }
+
+            "loading" -> {
+                loadingMessage = if (message.optBoolean("on", false)) {
+                    message.optJSONObject("options")?.optString("message").orEmpty()
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+    fun webViewFor(screen: AppScreen): WebView = tabViews.getOrPut(screen.id) {
+        createScreenWebView(
+            context = context,
+            url = server.urlFor(screen.htmlPath),
+            background = background,
+            onBridge = { handleBridge(it, screen) },
+            onFileChooser = media::openFileChooser,
+        ).apply {
+            // The large app bar follows the page's scroll in the same frame:
+            // read natively from the WebView, not via a JavaScript message,
+            // which arrives a frame or two late and makes the bar lag and jump.
+            setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                scrollOffsets[screen.id] = scrollY.toFloat()
+                if (stack.isEmpty() && tabScreens.getOrNull(tabIndex)?.id == screen.id) {
+                    appBarState.heightOffset = -scrollY.toFloat()
+                }
+            }
+        }
+    }
+
+    /**
+     * Each screen's WebView lives inside its own SwipeRefreshLayout.
+     *
+     * Not Compose's PullToRefreshBox: that waits for nested scroll from a
+     * Compose scrollable, which a WebView is not, so the gesture never fired.
+     * Wrapping in the View-system widget also keeps ONE container type for
+     * every screen, so switching tabs never rebuilds the hierarchy.
+     */
+    fun refreshHostFor(screen: AppScreen): SwipeRefreshLayout =
+        refreshHosts.getOrPut(screen.id) {
+            SwipeRefreshLayout(context).apply {
+                isEnabled = screen.pullToRefresh
+                setColorSchemeColors(styles.loadingIndicatorColor.toArgb())
+                setProgressBackgroundColorSchemeColor(styles.dialogBackground.toArgb())
+                addView(
+                    webViewFor(screen),
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                setOnRefreshListener {
+                    webViewFor(screen).evaluateJavascript(
+                        "window.dispatchEvent(new Event('native:refresh'));",
+                        null,
+                    )
+                    // A page that never calls refreshDone would otherwise leave
+                    // the spinner turning for good.
+                    postDelayed({ isRefreshing = false }, 8_000)
+                }
+            }
+        }
+
+    fun pushedWebViewFor(entry: PushedEntry): WebView = pushedViews.getOrPut(entry.key) {
+        createScreenWebView(
+            context = context,
+            url = server.urlFor(entry.screen.htmlPath),
+            background = background,
+            onBridge = { handleBridge(it, entry.screen) },
+            onFileChooser = media::openFileChooser,
+        )
+    }
+
+    fun sheetWebViewFor(entry: SheetEntry): WebView = sheetViews.getOrPut(entry.key) {
+        lateinit var view: WebView
+        view = createScreenWebView(
+            context = context,
+            url = server.urlFor(entry.screen.htmlPath),
+            background = background,
+            onBridge = { handleBridge(it, entry.screen, view) },
+            onFileChooser = media::openFileChooser,
+        )
+        view
+    }
+
+    /** An app bar action either opens a screen or is handed to the page. */
+    fun handleAction(action: ActionSpec, fromView: WebView?) {
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
+        if (action.screenId.isNotEmpty()) {
+            manifest.screenById(action.screenId)?.let { push(it) }
+            return
+        }
+        fromView?.dispatchNativeAction(action.id)
+    }
+
+    fun handleDrawerTap(item: DrawerItemSpec) {
+        scope.launch { drawerState.close() }
+
+        val current = tabScreens.getOrNull(tabIndex)
+
+        if (item.screenId.isNotEmpty()) {
+            // Selecting a tab beats stacking a duplicate route over it.
+            val index = tabScreens.indexOfFirst { it.id == item.screenId }
+            if (index != -1) {
+                tabIndex = index
+                notifyResume(tabScreens[index].id)
+                return
+            }
+            manifest.screenById(item.screenId)?.let { push(it) }
+            return
+        }
+
+        if (item.actionId.isNotEmpty() && current != null) {
+            tabViews[current.id]?.dispatchNativeAction(item.actionId)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            tabViews.values.forEach { it.destroySafely() }
+            pushedViews.values.forEach { it.destroySafely() }
+        }
+    }
+
+    // A notification tap can land before any page is listening -- a cold start
+    // is the obvious case -- so the payload waits in the bus until a screen is
+    // up to receive it.
+    // Events that arrive before a page can hear them -- a cold start from a
+    // notification or a link -- queue here. evaluateJavascript before the page
+    // has loaded is simply dropped, so delivery waits for the screen to report
+    // itself ready rather than firing into a WebView that is still blank.
+    DisposableEffect(Unit) {
+        NotificationBus.setListener { pendingEvents.add("native:notification" to it) }
+        DeepLinkBus.setListener { pendingEvents.add("native:deeplink" to it) }
+        onDispose {
+            NotificationBus.setListener(null)
+            DeepLinkBus.setListener(null)
+        }
+    }
+
+    LaunchedEffect(pendingEvents.size, readyScreens.size, tabIndex, stack.size) {
+        if (pendingEvents.isEmpty()) return@LaunchedEffect
+
+        val screenId = if (stack.isEmpty()) {
+            tabScreens.getOrNull(tabIndex)?.id.orEmpty()
+        } else {
+            stack.last().screen.id
+        }
+        if (screenId !in readyScreens) return@LaunchedEffect
+
+        val queued = pendingEvents.toList()
+        pendingEvents.clear()
+        queued.forEach { (event, detail) -> emitEvent(event, detail) }
+    }
+
+    val currentScreenId = if (stack.isEmpty()) {
+        tabScreens.getOrNull(tabIndex)?.id.orEmpty()
+    } else {
+        stack.last().screen.id
+    }
+
+    BackHandler(
+        enabled = searchOpen ||
+            drawerState.isOpen ||
+            stack.isNotEmpty() ||
+            backIntercepted[currentScreenId] == true,
+    ) {
+        val currentView = if (stack.isEmpty()) {
+            tabViews[currentScreenId]
+        } else {
+            pushedViews[stack.last().key]
+        }
+
+        when {
+            searchOpen -> {
+                searchOpen = false
+                searchQuery = ""
+                currentView?.dispatchSearch("", submit = false)
+            }
+
+            drawerState.isOpen -> scope.launch { drawerState.close() }
+
+            // The page asked to handle back itself; it gets the press as an
+            // event and decides what happens.
+            backIntercepted[currentScreenId] == true -> currentView?.evaluateJavascript(
+                "window.dispatchEvent(new Event('native:back'));",
+                null,
+            )
+
+            else -> pop()
+        }
+    }
+
+    // Each tab keeps its own scroll: the bar takes that tab's collapse state.
+    LaunchedEffect(tabIndex) {
+        appBarState.heightOffset = -(scrollOffsets[tabScreens.getOrNull(tabIndex)?.id.orEmpty()] ?: 0f)
+    }
+
+    if (tabScreens.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("This app has no screens.")
+        }
+        return
+    }
+
+    val currentTab = tabScreens[tabIndex.coerceIn(0, tabScreens.size - 1)]
+    val topEntry = stack.lastOrNull()
+
+    // Orientation, full screen and system bar colours follow whichever screen
+    // is in front, pushed route included.
+    val windowScreen = topEntry?.screen ?: currentTab
+    ApplyScreenWindowEffects(
+        orientation = windowScreen.orientation,
+        fullScreen = windowScreen.fullScreen,
+        statusBarColor = parseHexColor(manifest.theme.resolvedStatusBarColor, Color.White),
+        navigationBarColor = parseHexColor(manifest.theme.resolvedNavigationBarColor, Color.White),
+    )
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = hasDrawer && topEntry == null,
+        drawerContent = {
+            if (hasDrawer) ManifestDrawer(manifest, styles, ::handleDrawerTap)
+        },
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            // The floating pill is drawn over the page (see-through around it, the page
+            // scrolls behind it); the standard bar sits below the page as usual.
+            val floatingTabs = manifest.tabs.size >= 2 && manifest.isFloatingTabBar
+            val tabBar: @Composable () -> Unit = {
+                ManifestNavigationBar(
+                    manifest = manifest,
+                    styles = styles,
+                    badges = badges,
+                    onCenter = { centre ->
+                        // A tab screen is switched to rather than stacked on top.
+                        val tab = manifest.tabs.indexOfFirst { it.screenId == centre.screenId }
+                        if (centre.screenId.isNotEmpty() && tab != -1) {
+                            tabIndex = tab
+                            tabScreens.getOrNull(tab)?.let { notifyResume(it.id) }
+                        } else {
+                            handleAction(centre, tabViews[currentTab.id])
+                        }
+                    },
+                    selectedIndex = tabIndex.coerceIn(0, manifest.tabs.size - 1),
+                    onSelected = { index ->
+                        tabIndex = index
+                        tabScreens.getOrNull(index)?.let { notifyResume(it.id) }
+                    },
+                )
+            }
+            Scaffold(
+                containerColor = background,
+                snackbarHost = {
+                    SnackbarHost(snackbars) { data -> StyledSnackbar(data, styles) }
+                },
+                floatingActionButton = {
+                    if (manifest.fab.visibleOn(currentTab.id)) {
+                        // Above the floating pill, which is drawn over the page.
+                        val lift = if (floatingTabs) (if (manifest.tabBarLabels) 86 else 78).dp else 0.dp
+                        Box(Modifier.padding(bottom = lift)) {
+                            ManifestFab(
+                                fab = manifest.fab,
+                                styles = styles,
+                                onClick = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    if (manifest.fab.screenId.isNotEmpty()) {
+                                        manifest.screenById(manifest.fab.screenId)?.let { push(it) }
+                                    } else {
+                                        tabViews[currentTab.id]
+                                            ?.dispatchNativeAction(manifest.fab.actionId)
+                                    }
+                                },
+                            )
+                        }
+                    }
+                },
+                topBar = {
+                    if (currentTab.showAppBar) {
+                        Column {
+                            ManifestAppBar(
+                                manifest = manifest,
+                                title = titleOverrides[currentTab.id] ?: currentTab.title,
+                                styles = styles,
+                                searchOpen = searchOpen,
+                                searchQuery = searchQuery,
+                                onSearchToggle = if (manifest.appBar.search.visibleOn(currentTab.id)) {
+                                    { open ->
+                                        searchOpen = open
+                                        if (!open) {
+                                            searchQuery = ""
+                                            tabViews[currentTab.id]
+                                                ?.dispatchSearch("", submit = false)
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                onSearchChange = { query ->
+                                    searchQuery = query
+                                    tabViews[currentTab.id]?.dispatchSearch(query, submit = false)
+                                },
+                                onSearchSubmit = {
+                                    tabViews[currentTab.id]
+                                        ?.dispatchSearch(searchQuery, submit = true)
+                                },
+                                onOpenDrawer = if (hasDrawer) {
+                                    { scope.launch { drawerState.open() } }
+                                } else {
+                                    null
+                                },
+                                onBack = null,
+                                onAction = { handleAction(it, tabViews[currentTab.id]) },
+                                large = manifest.appBar.isLarge,
+                                scrollBehavior = if (manifest.appBar.isLarge) collapse else null,
+                            )
+
+                            // Tabs under the app bar, for apps that navigate
+                            // that way instead of along the bottom.
+                            if (manifest.topTabs.size >= 2) {
+                                ManifestTopTabs(
+                                    tabs = manifest.topTabs,
+                                    selectedIndex = tabIndex.coerceIn(0, manifest.topTabs.size - 1),
+                                    styles = styles,
+                                    onSelected = { index ->
+                                        tabIndex = index
+                                        tabScreens.getOrNull(index)?.let { notifyResume(it.id) }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                },
+                bottomBar = {
+                    if (manifest.tabs.size >= 2 && !floatingTabs) tabBar()
+                },
+            ) { padding ->
+                // With the large bar the page area keeps the SMALL bar's
+                // height and the bar collapses over the page instead: resizing
+                // the WebView every frame repaints the page and flickers. The
+                // page's stylesheet leaves the matching room at its top.
+                val largeBar = manifest.appBar.isLarge && manifest.topTabs.size < 2 && currentTab.showAppBar
+                val top = if (largeBar) {
+                    TopAppBarDefaults.windowInsets.asPaddingValues().calculateTopPadding() + 64.dp
+                } else {
+                    padding.calculateTopPadding()
+                }
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(top = top, bottom = padding.calculateBottomPadding()),
+                ) {
+                    val showBanner = manifest.ads.bannerVisibleOn(currentTab.id) &&
+                        adUnits.banner.isNotEmpty()
+
+                    if (showBanner && manifest.ads.bannerPosition == "top") {
+                        AdBanner(adsBridge, adUnits.banner)
+                    }
+
+                    Box(Modifier.weight(1f)) {
+                        TabWebViews(
+                            screens = tabScreens,
+                            selectedIndex = tabIndex.coerceIn(0, tabScreens.size - 1),
+                            hostFor = ::refreshHostFor,
+                        )
+                        if (floatingTabs) Box(Modifier.align(Alignment.BottomCenter)) { tabBar() }
+                    }
+
+                    // Below the content and above the tab bar, so it never
+                    // covers what the user is reading.
+                    if (showBanner && manifest.ads.bannerPosition != "top") {
+                        AdBanner(adsBridge, adUnits.banner)
+                    }
+                }
+            }
+
+            if (topEntry != null) {
+                PushedScreenView(
+                    entry = topEntry,
+                    manifest = manifest,
+                    background = background,
+                    snackbars = snackbars,
+                    styles = styles,
+                    webView = pushedWebViewFor(topEntry),
+                    title = titleOverrides[topEntry.screen.id]
+                        ?: topEntry.titleOverride
+                        ?: topEntry.screen.title,
+                    onBack = ::pop,
+                    onAction = { handleAction(it, pushedViews[topEntry.key]) },
+                )
+            }
+
+            sheet?.let { entry ->
+                ScreenSheet(
+                    entry = entry,
+                    background = background,
+                    webView = sheetWebViewFor(entry),
+                    onDismiss = { closeSheet(null) },
+                )
+            }
+
+            // Native dialogs, sheets and pickers a page opened, drawn over the
+            // whole shell so they cover the app bar and tab bar like real ones.
+            NativeComponentHost(
+                // A media request is already running as an Activity; only the
+                // composable components belong to the host.
+                request = pending?.first?.takeUnless {
+                    media.handles(it.kind) ||
+                        device.handles(it.kind) ||
+                        security.handles(it.kind) ||
+                        notifications.handles(it.kind) ||
+                        app.handles(it.kind) ||
+                        ads.handles(it.kind) ||
+                        it.kind == "requestPermission" ||
+                        it.kind == "permissionStatus"
+                },
+                styles = styles,
+                onResult = { id, result -> resolve(id, result, pending?.second) },
+            )
+
+            loadingMessage?.let { message -> NativeLoadingOverlay(message, styles) }
+        }
+    }
+}
+
+/**
+ * Every tab's WebView lives in one container and is toggled by visibility, so
+ * switching tabs never detaches (and therefore never reloads) a page.
+ */
+@Composable
+private fun TabWebViews(
+    screens: List<AppScreen>,
+    selectedIndex: Int,
+    hostFor: (AppScreen) -> View,
+) {
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { context -> FrameLayout(context) },
+        update = { container ->
+            screens.forEach { screen ->
+                val view = hostFor(screen)
+                // Re-parent, never just "add when unparented": if this container
+                // was recreated, every view still points at the old, detached
+                // one and would never be added -- which showed up as a screen
+                // going blank after switching tabs.
+                if (view.parent !== container) {
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    container.addView(
+                        view,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                }
+            }
+            screens.forEachIndexed { index, screen ->
+                hostFor(screen).visibility =
+                    if (index == selectedIndex) View.VISIBLE else View.GONE
+            }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PushedScreenView(
+    entry: PushedEntry,
+    manifest: AppManifest,
+    background: Color,
+    snackbars: SnackbarHostState,
+    styles: ComponentStyles,
+    webView: WebView,
+    title: String,
+    onBack: () -> Unit,
+    onAction: (ActionSpec) -> Unit,
+) {
+    Surface(color = background, modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = background,
+            snackbarHost = {
+                SnackbarHost(snackbars) { data -> StyledSnackbar(data, styles) }
+            },
+            topBar = {
+                if (entry.screen.showAppBar) {
+                    // Same app bar spec as the tab shell, so a screen looks the
+                    // same however it was opened; the back arrow is what a
+                    // pushed route adds.
+                    ManifestAppBar(
+                        manifest = manifest,
+                        title = title,
+                        styles = styles,
+                        searchOpen = false,
+                        searchQuery = "",
+                        onSearchToggle = null,
+                        onSearchChange = {},
+                        onSearchSubmit = {},
+                        onOpenDrawer = null,
+                        onBack = onBack,
+                        onAction = onAction,
+                    )
+                }
+            },
+        ) { padding ->
+            AndroidView(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                factory = { context -> FrameLayout(context) },
+                update = { container ->
+                    if (webView.parent !== container) {
+                        (webView.parent as? ViewGroup)?.removeView(webView)
+                        container.addView(webView)
+                    }
+                    webView.visibility = View.VISIBLE
+                },
+            )
+        }
+    }
+}
+
+/** The native app bar: title, logo, actions, overflow menu and search. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ManifestAppBar(
+    manifest: AppManifest,
+    title: String,
+    styles: ComponentStyles,
+    searchOpen: Boolean,
+    searchQuery: String,
+    /** Null on a screen without search, and on pushed routes. */
+    onSearchToggle: ((Boolean) -> Unit)?,
+    onSearchChange: (String) -> Unit,
+    onSearchSubmit: () -> Unit,
+    onOpenDrawer: (() -> Unit)?,
+    onBack: (() -> Unit)?,
+    onAction: (ActionSpec) -> Unit,
+    /** The big-title bar (appBar.style 'large'); tab screens only. */
+    large: Boolean = false,
+    /** Collapses the large bar to the small one as the page scrolls. */
+    scrollBehavior: TopAppBarScrollBehavior? = null,
+) {
+    val spec = manifest.appBar
+    val containerColor = parseHexColor(manifest.theme.resolvedAppBarBackground, Color.White)
+    val contentColor = parseHexColor(manifest.theme.resolvedAppBarForeground, Color.Black)
+    var menuOpen by remember { mutableStateOf(false) }
+
+    // A gradient bar paints itself behind a see-through container.
+    val gradientEnd = styles.appBarGradientEnd
+    val barModifier = if (gradientEnd != null) {
+        Modifier.gradientBackground(containerColor, gradientEnd, styles.appBarGradientAngle)
+    } else {
+        Modifier
+    }
+    val barHeight = styles.appBarHeight ?: TopAppBarDefaults.TopAppBarExpandedHeight
+    val colors = TopAppBarDefaults.topAppBarColors(
+        containerColor = if (gradientEnd != null) Color.Transparent else containerColor,
+        scrolledContainerColor = if (gradientEnd != null) Color.Transparent else containerColor,
+        titleContentColor = contentColor,
+        navigationIconContentColor = contentColor,
+        actionIconContentColor = contentColor,
+    )
+
+    val titleContent: @Composable () -> Unit = {
+        if (searchOpen) {
+            // The search field replaces the title: on a phone there is not room
+            // for both.
+            val focus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { focus.requestFocus() }
+
+            BasicTextField(
+                value = searchQuery,
+                onValueChange = onSearchChange,
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = styles.searchTextColor,
+                    fontSize = styles.searchTextSize,
+                    fontFamily = styles.fontFamily,
+                ),
+                cursorBrush = SolidColor(styles.searchTextColor),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                decorationBox = { field ->
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            spec.search.placeholder,
+                            color = styles.searchHintColor,
+                            fontSize = styles.searchTextSize,
+                            fontFamily = styles.fontFamily,
+                        )
+                    }
+                    field()
+                },
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AppBarLogo(spec, contentColor)
+                Text(
+                    title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = styles.appBarTitleSize ?: TextUnit.Unspecified,
+                    fontWeight = styles.appBarTitleWeight,
+                    fontFamily = styles.fontFamily,
+                )
+            }
+        }
+    }
+
+    val navigationIcon: @Composable () -> Unit = {
+        when {
+            searchOpen -> IconButton(onClick = { onSearchToggle?.invoke(false) }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
+            }
+
+            onBack != null -> IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+
+            onOpenDrawer != null -> IconButton(onClick = onOpenDrawer) {
+                Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+            }
+        }
+    }
+
+    val actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {
+        if (searchOpen) {
+            if (searchQuery.isNotEmpty()) {
+                IconButton(onClick = { onSearchChange("") }) {
+                    Icon(Icons.Filled.Close, contentDescription = "Clear")
+                }
+            }
+        } else {
+            if (onSearchToggle != null) {
+                IconButton(onClick = { onSearchToggle(true) }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Search")
+                }
+            }
+
+            for (action in spec.actions) {
+                if (action.isText) {
+                    TextButton(onClick = { onAction(action) }) {
+                        Text(action.label, color = contentColor)
+                    }
+                } else {
+                    IconButton(onClick = { onAction(action) }) {
+                        Icon(
+                            materialIcon(action.icon),
+                            contentDescription = action.label.ifEmpty { action.id },
+                        )
+                    }
+                }
+            }
+
+            if (spec.menu.isNotEmpty()) {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                    shape = RoundedCornerShape(styles.menuCornerRadius),
+                    containerColor = styles.menuBackground,
+                ) {
+                    for (item in spec.menu) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    item.label.ifEmpty { item.id },
+                                    color = styles.menuTextColor,
+                                    fontSize = styles.menuTextSize,
+                                    fontFamily = styles.fontFamily,
+                                )
+                            },
+                            leadingIcon = if (item.icon.isEmpty()) {
+                                null
+                            } else {
+                                {
+                                    Icon(
+                                        materialIcon(item.icon),
+                                        contentDescription = null,
+                                        tint = styles.menuTextColor,
+                                    )
+                                }
+                            },
+                            onClick = {
+                                menuOpen = false
+                                onAction(item)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (large && !searchOpen) {
+        MediumTopAppBar(
+            title = titleContent,
+            navigationIcon = navigationIcon,
+            actions = actions,
+            colors = colors,
+            scrollBehavior = scrollBehavior,
+            modifier = barModifier,
+        )
+    } else if (spec.isCentered && !searchOpen) {
+        CenterAlignedTopAppBar(
+            title = titleContent,
+            navigationIcon = navigationIcon,
+            actions = actions,
+            colors = colors,
+            expandedHeight = barHeight,
+            modifier = barModifier,
+        )
+    } else {
+        TopAppBar(
+            title = titleContent,
+            navigationIcon = navigationIcon,
+            actions = actions,
+            colors = colors,
+            expandedHeight = barHeight,
+            modifier = barModifier,
+        )
+    }
+}
+
+/**
+ * The AdMob banner.
+ *
+ * Sized to the available width so AdMob can pick an adaptive height, and it
+ * takes no space at all when there is nothing to show -- an app built without
+ * ads, or a request that went unfilled.
+ */
+@Composable
+private fun AdBanner(bridge: AdsBridge, unitId: String) {
+    val configuration = LocalConfiguration.current
+    val view = remember(unitId, configuration.screenWidthDp) {
+        bridge.createBanner(unitId, configuration.screenWidthDp)
+    } ?: return
+
+    AndroidView(
+        modifier = Modifier.fillMaxWidth(),
+        factory = { view },
+    )
+}
+
+/** The floating action button, styled from the manifest like everything else. */
+@Composable
+private fun ManifestFab(fab: FabSpec, styles: ComponentStyles, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(styles.fabCornerRadius)
+
+    if (fab.label.isEmpty()) {
+        FloatingActionButton(
+            onClick = onClick,
+            containerColor = styles.fabBackground,
+            contentColor = styles.fabForeground,
+            shape = shape,
+        ) {
+            Icon(materialIcon(fab.icon), contentDescription = fab.actionId.ifEmpty { "Action" })
+        }
+    } else {
+        ExtendedFloatingActionButton(
+            onClick = onClick,
+            containerColor = styles.fabBackground,
+            contentColor = styles.fabForeground,
+            shape = shape,
+            icon = { Icon(materialIcon(fab.icon), contentDescription = null) },
+            text = {
+                Text(fab.label, fontFamily = styles.fontFamily, fontWeight = styles.topTabWeight)
+            },
+        )
+    }
+}
+
+/** Tabs under the app bar, for apps that navigate that way. */
+@Composable
+private fun ManifestTopTabs(
+    tabs: List<AppTab>,
+    selectedIndex: Int,
+    styles: ComponentStyles,
+    onSelected: (Int) -> Unit,
+) {
+    TabRow(
+        selectedTabIndex = selectedIndex,
+        containerColor = styles.topTabBackground,
+        contentColor = styles.topTabSelected,
+        indicator = { positions ->
+            if (selectedIndex < positions.size) {
+                TabRowDefaults.SecondaryIndicator(
+                    modifier = Modifier.tabIndicatorOffset(positions[selectedIndex]),
+                    color = styles.topTabIndicator,
+                )
+            }
+        },
+    ) {
+        tabs.forEachIndexed { index, tab ->
+            Tab(
+                selected = index == selectedIndex,
+                onClick = { onSelected(index) },
+                text = {
+                    Text(
+                        tab.label,
+                        color = if (index == selectedIndex) {
+                            styles.topTabSelected
+                        } else {
+                            styles.topTabUnselected
+                        },
+                        fontSize = styles.topTabTextSize,
+                        fontWeight = styles.topTabWeight,
+                        fontFamily = styles.fontFamily,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                icon = if (tab.icon.isEmpty()) {
+                    null
+                } else {
+                    {
+                        Icon(
+                            materialIcon(tab.icon),
+                            contentDescription = null,
+                            tint = if (index == selectedIndex) {
+                                styles.topTabSelected
+                            } else {
+                                styles.topTabUnselected
+                            },
+                        )
+                    }
+                },
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun AppBarLogo(spec: AppBarSpec, tint: Color) {
+    val context = LocalContext.current
+
+    if (spec.logoImage.isNotEmpty()) {
+        // A missing image must not blank the app bar, so fall back to the icon.
+        val bitmap = remember(spec.logoImage) { loadAsset(context, spec.logoImage) }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.height(26.dp).padding(end = 10.dp),
+            )
+            return
+        }
+    }
+
+    if (spec.logoIcon.isNotEmpty()) {
+        Icon(
+            materialIcon(spec.logoIcon),
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(22.dp).padding(end = 8.dp),
+        )
+    }
+}
+
+/** The native bottom tabs, coloured from the manifest. */
+@Composable
+private fun TabIcon(tab: AppTab, badge: String?, tint: Color?, size: Dp = 24.dp) {
+    val icon: @Composable () -> Unit = {
+        if (tint == null) {
+            Icon(materialIcon(tab.icon), contentDescription = tab.label, modifier = Modifier.size(size))
+        } else {
+            Icon(materialIcon(tab.icon), contentDescription = tab.label, tint = tint, modifier = Modifier.size(size))
+        }
+    }
+    if (badge.isNullOrEmpty()) {
+        icon()
+    } else {
+        BadgedBox(badge = { Badge { Text(badge) } }) { icon() }
+    }
+}
+
+/**
+ * A floating tab bar's edge: a hairline in a tone that contrasts with the bar
+ * (light on a dark bar, dark on a light one), so it stands off the page even
+ * where its shadow cannot show (a dark page). Same as floatingLift in the preview.
+ */
+private fun floatingBarEdge(bar: Color): BorderStroke =
+    BorderStroke(1.dp, if (bar.luminance() < 0.5f) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.08f))
+
+/** WCAG contrast ratio of two colours (1 = identical, 21 = black on white). */
+private fun contrastOf(a: Color, b: Color): Float {
+    val la = a.luminance() + 0.05f
+    val lb = b.luminance() + 0.05f
+    return if (la > lb) la / lb else lb / la
+}
+
+/**
+ * The selected tab's icon colour on its highlight chip. A chip solid enough to
+ * hide the icon (same or a too-close colour) gets black or white instead,
+ * whichever reads better on it. Same rule as iconOnChip in the preview.
+ */
+private fun iconOnChip(chip: Color, icon: Color): Color {
+    if (chip.alpha < 0.4f || contrastOf(chip, icon) >= 3f) return icon
+    return if (contrastOf(chip, Color.White) >= contrastOf(chip, Color.Black)) Color.White else Color.Black
+}
+
+/**
+ * A two-colour linear gradient behind the content, at a CSS angle (0 = to the
+ * top, 90 = to the right, 180 = to the bottom), the same as the preview draws.
+ */
+private fun Modifier.gradientBackground(start: Color, end: Color, angle: Float): Modifier = drawBehind {
+    val rad = Math.toRadians(angle.toDouble())
+    val dx = kotlin.math.sin(rad).toFloat()
+    val dy = -kotlin.math.cos(rad).toFloat()
+    val half = (kotlin.math.abs(size.width * dx) + kotlin.math.abs(size.height * dy)) / 2f
+    val c = center
+    drawRect(
+        Brush.linearGradient(
+            colors = listOf(start, end),
+            start = Offset(c.x - dx * half, c.y - dy * half),
+            end = Offset(c.x + dx * half, c.y + dy * half),
+        ),
+    )
+}
+
+/**
+ * tabBar.expand: the active tab grows into a filled pill with its icon and
+ * label side by side; the others are icons only. Standard (a bar along the
+ * bottom) or floating (a rounded bar above the page).
+ */
+@Composable
+private fun ExpandingTabBar(
+    manifest: AppManifest,
+    styles: ComponentStyles,
+    badges: Map<String, String>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    selected: Color,
+    unselected: Color,
+) {
+    val barColor = parseHexColor(manifest.theme.resolvedNavBackground, Color.White)
+    val gradientEnd = styles.navGradientEnd
+    // The pill: navIndicatorColor when it is a visible colour, else navSelected.
+    val pill = styles.navIndicatorColor?.takeIf { it.alpha > 0.05f } ?: selected
+    val onPill = if (pill.luminance() < 0.42f) Color.White else Color(0xFF111111)
+    val floating = manifest.isFloatingTabBar
+    val height = styles.navHeight ?: if (floating) 66.dp else 72.dp
+    val shape = RoundedCornerShape(if (floating) 36.dp else 0.dp)
+    val fill: Modifier = if (gradientEnd != null) {
+        Modifier.clip(shape).gradientBackground(barColor, gradientEnd, styles.navGradientAngle)
+    } else {
+        Modifier
+    }
+    val items: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().height(height).padding(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            manifest.tabs.forEachIndexed { index, tab ->
+                val on = index == selectedIndex
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) pill else Color.Transparent)
+                        .clickable { onSelected(index) }
+                        .animateContentSize()
+                        .padding(start = 14.dp, end = if (on) 18.dp else 14.dp, top = 12.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TabIcon(tab, badges[tab.screenId], if (on) onPill else unselected, styles.navIconSize)
+                    if (on) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tab.label,
+                            color = onPill,
+                            fontSize = (styles.navLabelSize.value + 2f).sp,
+                            fontWeight = styles.navLabelWeight.takeIf { it != FontWeight.SemiBold } ?: FontWeight.Bold,
+                            fontFamily = styles.fontFamily,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (floating) {
+        Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+            Surface(
+                shape = shape,
+                color = if (gradientEnd != null) Color.Transparent else barColor,
+                shadowElevation = 14.dp,
+                border = floatingBarEdge(barColor),
+                modifier = Modifier.fillMaxWidth().then(fill),
+            ) { items() }
+        }
+    } else {
+        // Along the bottom: the bar's colour runs under the system navigation bar.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .then(if (gradientEnd != null) fill else Modifier.background(barColor))
+                .navigationBarsPadding(),
+        ) { items() }
+    }
+}
+
+/** tabBar.style 'floating': a rounded pill above the page, with a gap around it. */
+@Composable
+private fun FloatingTabBar(
+    manifest: AppManifest,
+    styles: ComponentStyles,
+    badges: Map<String, String>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    selected: Color,
+    unselected: Color,
+    onCenter: (ActionSpec) -> Unit = {},
+) {
+    val labels = manifest.tabBarLabels
+    // 2 or 4 tabs: an extra button in the middle slot. 3 or 5: the middle tab is the button.
+    val center = manifest.tabBarCenter?.takeIf { manifest.centreKind == "button" }
+    val centreTab = if (manifest.centreKind == "tab") (manifest.tabs.size - 1) / 2 else -1
+    val centreInside = manifest.tabBarCenterPosition == "inside"
+    val middle = (manifest.tabs.size + 1) / 2
+    Box(
+        Modifier
+            .fillMaxWidth()
+            // Inside the page area, which already ends above the system bar.
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        val barColor = parseHexColor(manifest.theme.resolvedNavBackground, Color.White)
+        val gradientEnd = styles.navGradientEnd
+        Surface(
+            shape = RoundedCornerShape(32.dp),
+            color = if (gradientEnd != null) Color.Transparent else barColor,
+            shadowElevation = 14.dp,
+            border = floatingBarEdge(barColor),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(styles.navHeight ?: if (labels) 66.dp else 58.dp)
+                .then(
+                    if (gradientEnd != null) {
+                        Modifier.clip(RoundedCornerShape(32.dp)).gradientBackground(barColor, gradientEnd, styles.navGradientAngle)
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 6.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                manifest.tabs.forEachIndexed { index, tab ->
+                    val on = index == selectedIndex
+                    val tint = if (on) selected else unselected
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(24.dp))
+                            .clickable { onSelected(index) }
+                            .padding(vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        val isCentre = index == centreTab
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (on && !isCentre) styles.navIndicatorColor ?: selected.copy(alpha = 0.16f) else Color.Transparent)
+                                .padding(horizontal = 16.dp, vertical = 3.dp),
+                        ) {
+                            // The middle tab's icon is drawn on the round button instead.
+                            if (isCentre) Spacer(Modifier.size(24.dp)) else TabIcon(tab, badges[tab.screenId], if (on) iconOnChip(styles.navIndicatorColor ?: selected.copy(alpha = 0.16f), selected) else tint, styles.navIconSize)
+                        }
+                        if (labels && !(isCentre && centreInside)) {
+                            Text(tab.label, fontSize = styles.navLabelSize, fontWeight = styles.navLabelWeight, fontFamily = styles.fontFamily, color = tint, maxLines = 1)
+                        }
+                    }
+                    // Room for the centre button, which is drawn over the pill.
+                    if (center != null && index == middle - 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+        if (center != null) {
+            // Pill height: 66dp with labels, 58dp icons only.
+            val (size, offset) = centreLayout(manifest.tabBarCenterPosition, if (labels) 66 else 58, raisedBy = 14, raisedSize = 56)
+            CentreTabButton(
+                icon = center.icon,
+                description = center.label.ifEmpty { center.id },
+                badge = null,
+                color = styles.navCentreColor ?: selected,
+                size = size,
+                elevation = if (manifest.tabBarCenterPosition == "inside") 3.dp else 8.dp,
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = offset),
+                onClick = { onCenter(center) },
+            )
+        }
+        if (centreTab >= 0) {
+            // Smaller than the extra button, so it clears the label under it.
+            val tab = manifest.tabs[centreTab]
+            val (size, offset) = centreLayout(manifest.tabBarCenterPosition, if (labels) 66 else 58, raisedBy = 14, raisedSize = 52)
+            CentreTabButton(
+                icon = tab.icon,
+                description = tab.label,
+                badge = badges[tab.screenId],
+                color = styles.navCentreColor ?: selected,
+                size = size,
+                elevation = if (centreInside) 3.dp else 8.dp,
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = offset),
+                onClick = { onSelected(centreTab) },
+            )
+        }
+    }
+}
+
+/**
+ * Size and vertical offset (from the bar's top edge) of the centre button:
+ * 'raised' has a small part above the top edge, 'inside' sits centred within
+ * the bar.
+ */
+private fun centreLayout(position: String, barHeight: Int, raisedBy: Int, raisedSize: Int): Pair<Dp, Dp> =
+    when (position) {
+        "inside" -> 48.dp to ((barHeight - 48) / 2).dp
+        else -> raisedSize.dp to (-raisedBy).dp
+    }
+
+/**
+ * tabBar.center: the round button in the middle of the bottom tabs -- an
+ * extra button (2 or 4 tabs) or the middle tab itself (3 or 5).
+ */
+@Composable
+private fun CentreTabButton(
+    icon: String,
+    description: String,
+    badge: String?,
+    color: Color,
+    size: Dp,
+    elevation: Dp,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = color,
+        shadowElevation = elevation,
+        modifier = modifier.size(size),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            val glyph: @Composable () -> Unit = {
+                Icon(
+                    materialIcon(icon),
+                    contentDescription = description,
+                    tint = Color.White,
+                    modifier = Modifier.size(if (size < 52.dp) 24.dp else 28.dp),
+                )
+            }
+            if (badge.isNullOrEmpty()) glyph() else BadgedBox(badge = { Badge { Text(badge) } }) { glyph() }
+        }
+    }
+}
+
+/** A screen presented as a bottom sheet; its page is the content. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ScreenSheet(entry: SheetEntry, background: Color, webView: WebView, onDismiss: () -> Unit) {
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = state,
+        containerColor = background,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+    ) {
+        AndroidView(
+            factory = {
+                (webView.parent as? ViewGroup)?.removeView(webView)
+                webView
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(if (entry.size == "full") 0.94f else 0.62f)
+                .imePadding(),
+        )
+    }
+}
+
+@Composable
+private fun ManifestNavigationBar(
+    manifest: AppManifest,
+    styles: ComponentStyles,
+    badges: Map<String, String> = emptyMap(),
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    onCenter: (ActionSpec) -> Unit = {},
+) {
+    val labels = manifest.tabBarLabels
+    // 2 or 4 tabs: an extra button in the middle slot. 3 or 5: the middle tab is the button.
+    val center = manifest.tabBarCenter?.takeIf { manifest.centreKind == "button" }
+    val centreTab = if (manifest.centreKind == "tab") (manifest.tabs.size - 1) / 2 else -1
+    val centreInside = manifest.tabBarCenterPosition == "inside"
+    val middle = (manifest.tabs.size + 1) / 2
+    val selected = parseHexColor(manifest.theme.resolvedNavSelected)
+    val unselected =
+        parseHexColor(manifest.theme.resolvedNavUnselected, Color.Black.copy(alpha = 0.54f))
+
+    if (manifest.tabBarExpand) {
+        ExpandingTabBar(manifest, styles, badges, selectedIndex, onSelected, selected, unselected)
+        return
+    }
+    if (manifest.isFloatingTabBar) {
+        FloatingTabBar(manifest, styles, badges, selectedIndex, onSelected, selected, unselected, onCenter)
+        return
+    }
+
+    val barColor = parseHexColor(manifest.theme.resolvedNavBackground, Color.White)
+    val gradientEnd = styles.navGradientEnd
+    val systemBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    var barModifier: Modifier = Modifier
+    if (gradientEnd != null) barModifier = barModifier.gradientBackground(barColor, gradientEnd, styles.navGradientAngle)
+    // The bar's own height; the system bar's inset is drawn inside it, so it is added on top.
+    styles.navHeight?.let { barModifier = barModifier.height(it + systemBar) }
+
+    // The centre button is drawn over the bar, so the bar sits in a Box.
+    Box {
+        NavigationBar(
+            modifier = barModifier,
+            containerColor = if (gradientEnd != null) Color.Transparent else barColor,
+        ) {
+            manifest.tabs.forEachIndexed { index, tab ->
+                val isCentre = index == centreTab
+                NavigationBarItem(
+                    selected = index == selectedIndex,
+                    onClick = { onSelected(index) },
+                    // The middle tab's icon is drawn on the round button instead.
+                    icon = { if (isCentre) Spacer(Modifier.size(24.dp)) else TabIcon(tab, badges[tab.screenId], null, styles.navIconSize) },
+                    label = if (labels && !(isCentre && centreInside)) {
+                        { Text(tab.label, fontSize = styles.navLabelSize, fontWeight = styles.navLabelWeight, fontFamily = styles.fontFamily) }
+                    } else {
+                        null
+                    },
+                    alwaysShowLabel = labels,
+                    // Explicit colours: the bar can be dark under a light theme, and
+                    // inherited colours would vanish.
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = iconOnChip(styles.navIndicatorColor ?: selected.copy(alpha = 0.16f), selected),
+                        selectedTextColor = selected,
+                        unselectedIconColor = unselected,
+                        unselectedTextColor = unselected,
+                        indicatorColor = if (isCentre) Color.Transparent else styles.navIndicatorColor ?: selected.copy(alpha = 0.16f),
+                    ),
+                )
+                // Room for the centre button, which is drawn over the bar.
+                if (center != null && index == middle - 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        if (center != null) {
+            // Material's navigation bar is 80dp above the system insets.
+            val (size, offset) = centreLayout(manifest.tabBarCenterPosition, 80, raisedBy = 20, raisedSize = 60)
+            CentreTabButton(
+                icon = center.icon,
+                description = center.label.ifEmpty { center.id },
+                badge = null,
+                color = styles.navCentreColor ?: selected,
+                size = size,
+                elevation = if (manifest.tabBarCenterPosition == "inside") 3.dp else 8.dp,
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = offset),
+                onClick = { onCenter(center) },
+            )
+        }
+        if (centreTab >= 0) {
+            val tab = manifest.tabs[centreTab]
+            val (size, offset) = centreLayout(manifest.tabBarCenterPosition, 80, raisedBy = 20, raisedSize = 60)
+            CentreTabButton(
+                icon = tab.icon,
+                description = tab.label,
+                badge = badges[tab.screenId],
+                color = styles.navCentreColor ?: selected,
+                size = size,
+                elevation = if (centreInside) 3.dp else 8.dp,
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = offset),
+                onClick = { onSelected(centreTab) },
+            )
+        }
+    }
+}
+
+/** The native side menu, built from the manifest. */
+@Composable
+private fun ManifestDrawer(manifest: AppManifest, styles: ComponentStyles, onTap: (DrawerItemSpec) -> Unit) {
+    val context = LocalContext.current
+    val spec = manifest.drawer
+    val theme = manifest.theme
+
+    val itemText = parseHexColor(theme.resolvedDrawerText, Color.Black)
+    val itemIcon = parseHexColor(theme.resolvedDrawerIcon, Color.Black)
+    val headerText = parseHexColor(theme.resolvedDrawerHeaderText, Color.Black)
+
+    val sheetColor = parseHexColor(theme.resolvedDrawerBackground, Color.White)
+    val sheetShape = RoundedCornerShape(topEnd = styles.drawerCornerRadius, bottomEnd = styles.drawerCornerRadius)
+    val gradientEnd = styles.drawerGradientEnd
+    // A custom width, kept clear of the screen edge so the page still shows behind it.
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    var sheetModifier: Modifier = Modifier
+    styles.drawerWidth?.let { sheetModifier = sheetModifier.width(minOf(it, screenWidth - 56.dp)) }
+    if (gradientEnd != null) {
+        sheetModifier = sheetModifier.clip(sheetShape).gradientBackground(sheetColor, gradientEnd, styles.drawerGradientAngle)
+    }
+    ModalDrawerSheet(
+        modifier = sheetModifier,
+        drawerContainerColor = if (gradientEnd != null) Color.Transparent else sheetColor,
+        drawerShape = sheetShape,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(parseHexColor(theme.resolvedDrawerHeaderBackground, Color.White))
+                .padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 20.dp),
+        ) {
+            if (spec.headerImage.isNotEmpty()) {
+                val bitmap = remember(spec.headerImage) { loadAsset(context, spec.headerImage) }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.height(44.dp).padding(bottom = 10.dp),
+                    )
+                }
+            }
+            Text(
+                text = spec.headerTitle.ifEmpty { manifest.name },
+                color = headerText,
+                fontWeight = FontWeight.Bold,
+            )
+            if (spec.headerSubtitle.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(spec.headerSubtitle, color = headerText.copy(alpha = 0.75f), fontSize = 12.sp)
+            }
+        }
+
+        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+            items(spec.items.size) { index ->
+                val item = spec.items[index]
+                if (item.isDivider) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        color = itemText.copy(alpha = 0.2f),
+                    )
+                } else {
+                    NavigationDrawerItem(
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                        icon = if (item.icon.isEmpty()) {
+                            null
+                        } else {
+                            { Icon(materialIcon(item.icon), contentDescription = null, tint = itemIcon) }
+                        },
+                        // Explicit colours: the drawer can be dark while the app
+                        // theme is light, and inherited text would be invisible.
+                        label = { Text(item.label, color = itemText, fontSize = styles.drawerItemSize, fontWeight = styles.drawerItemWeight, fontFamily = styles.fontFamily) },
+                        selected = false,
+                        onClick = { onTap(item) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Images referenced by the manifest ship inside assets/www. */
+private fun loadAsset(context: Context, path: String): Bitmap? = try {
+    context.assets.open("www/$path").use { BitmapFactory.decodeStream(it) }
+} catch (_: Exception) {
+    null
+}
+
+// ---------------------------------------------------------------------------
+// WebView plumbing
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a WebView for one screen. Each screen keeps its own WebView so
+ * switching tabs preserves scroll position and page state.
+ */
+@SuppressLint("SetJavaScriptEnabled")
+private fun createScreenWebView(
+    context: Context,
+    url: String,
+    background: Color,
+    onBridge: (JSONObject) -> Unit,
+    /**
+     * Opens a picker for `<input type="file">`. Without it the input is inert:
+     * a WebView cannot open one on its own.
+     */
+    onFileChooser: ((ValueCallback<Array<Uri>>, String) -> Unit)? = null,
+): WebView {
+    val webView = WebView(context)
+
+    webView.layoutParams = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT,
+    )
+    webView.setBackgroundColor(background.toArgb())
+    webView.overScrollMode = WebView.OVER_SCROLL_NEVER
+    // A native screen shows no scrollbar; the WebView's own one gives the
+    // page away as a web page.
+    webView.isVerticalScrollBarEnabled = false
+    webView.isHorizontalScrollBarEnabled = false
+
+    webView.settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        mediaPlaybackRequiresUserGesture = false
+        useWideViewPort = true
+        allowFileAccess = false
+        allowContentAccess = false
+        textZoom = 100
+    }
+
+    val main = Handler(Looper.getMainLooper())
+    webView.addJavascriptInterface(
+        object {
+            @JavascriptInterface
+            fun postMessage(payload: String) {
+                main.post {
+                    try {
+                        onBridge(JSONObject(payload))
+                    } catch (_: Exception) {
+                        // A malformed bridge message must not take down a screen.
+                    }
+                }
+            }
+        },
+        "NativeBridge",
+    )
+
+    val origin = originOf(url)
+
+    webView.webViewClient = object : WebViewClient() {
+        // Screens navigate through the bridge, so a real navigation attempt is
+        // either an external link or a mistake.
+        override fun shouldOverrideUrlLoading(
+            view: WebView?,
+            request: WebResourceRequest?,
+        ): Boolean {
+            val target = request?.url?.toString() ?: return true
+            return !target.startsWith(origin)
+        }
+    }
+
+    webView.webChromeClient = object : WebChromeClient() {
+        // Page errors are otherwise invisible: a screen with a typo in its
+        // module just renders blank with nothing in logcat.
+        override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+            Log.d(
+                "GeneratedApp",
+                "${message.messageLevel()}: ${message.message()} " +
+                    "(${message.sourceId()}:${message.lineNumber()})",
+            )
+            return true
+        }
+
+        override fun onShowFileChooser(
+            view: WebView?,
+            filePathCallback: ValueCallback<Array<Uri>>,
+            params: FileChooserParams?,
+        ): Boolean {
+            val handler = onFileChooser ?: return false
+            handler(filePathCallback, params?.acceptTypes?.firstOrNull().orEmpty())
+            return true
+        }
+    }
+
+    webView.loadUrl(url)
+    return webView
+}
+
+private fun originOf(url: String): String {
+    val schemeEnd = url.indexOf("://")
+    if (schemeEnd == -1) return url
+    val hostEnd = url.indexOf('/', schemeEnd + 3)
+    return if (hostEnd == -1) url else url.substring(0, hostEnd)
+}
+
+private fun WebView.dispatchNativeAction(id: String) {
+    if (id.isEmpty()) return
+    val encoded = JSONObject.quote(id)
+    evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('native:action', { detail: { id: $encoded } }));",
+        null,
+    )
+}
+
+/**
+ * Tells a live screen it is visible again so it can re-read its data.
+ *
+ * The fresh store is pushed in FIRST: the page's snapshot was injected when it
+ * loaded, so without this the screen re-renders from stale data and never sees
+ * what another screen wrote. Screens are never reloaded, so nothing else would
+ * refresh it.
+ */
+/**
+ * Native app bar search. `native:search` fires as the query changes so a page
+ * can filter live; `native:searchsubmit` fires on the keyboard's search key.
+ */
+private fun WebView.dispatchSearch(query: String, submit: Boolean) {
+    val encoded = JSONObject.quote(query)
+    val event = if (submit) "native:searchsubmit" else "native:search"
+    evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('$event', { detail: { query: $encoded } }));",
+        null,
+    )
+}
+
+private fun WebView.notifyResume(storeJson: String) {
+    evaluateJavascript(
+        "window.__STORE__ = $storeJson;window.dispatchEvent(new Event('native:resume'));",
+        null,
+    )
+}
+
+private fun WebView.destroySafely() {
+    (parent as? ViewGroup)?.removeView(this)
+    stopLoading()
+    loadUrl("about:blank")
+    removeAllViews()
+    destroy()
+}

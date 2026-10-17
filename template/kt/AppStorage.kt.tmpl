@@ -1,0 +1,113 @@
+package {{PACKAGE}}
+
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.json.JSONTokener
+import java.io.File
+
+/**
+ * Durable key/value storage for this app's data.
+ *
+ * Deliberately NOT the WebView's localStorage, which fails in two ways that
+ * only show up after data is lost:
+ *
+ *  * Chromium batches localStorage writes and flushes them on pause/idle, so
+ *    killing the app shortly after a write silently discards it.
+ *  * It is partitioned by origin, which includes the port, so any port change
+ *    orphans everything previously written.
+ *
+ * Instead the page reads a snapshot injected into the HTML by the server and
+ * writes through the native bridge to this file, which is written immediately.
+ */
+class AppStorage(private val file: File) {
+
+    private var cache: MutableMap<String, String>? = null
+
+    /**
+     * Serializes writes. Bridge messages arrive independently, so two rapid
+     * `set` calls would otherwise both read the old map and the second would
+     * clobber the first.
+     */
+    private val lock = Mutex()
+
+    private fun load(): MutableMap<String, String> {
+        cache?.let { return it }
+        if (!file.exists()) return LinkedHashMap<String, String>().also { cache = it }
+
+        return try {
+            val json = JSONObject(file.readText())
+            val map = LinkedHashMap<String, String>()
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                // The map holds raw JSON *text*, so a stored string has to be
+                // re-quoted here; otherwise the page would be handed bare
+                // `{"greeting":hello}` and the script would break.
+                map[key] = when (val value = json.get(key)) {
+                    is String -> JSONObject.quote(value)
+                    JSONObject.NULL -> "null"
+                    else -> value.toString()
+                }
+            }
+            map.also { cache = it }
+        } catch (_: Exception) {
+            // Corrupt file: start clean rather than blocking the app.
+            LinkedHashMap<String, String>().also { cache = it }
+        }
+    }
+
+    /**
+     * The whole store as a JSON object literal, ready to inject into a page.
+     *
+     * Takes the write lock, because a screen resuming immediately after another
+     * screen saved would otherwise read the pre-write state.
+     */
+    suspend fun asJsonObject(): String = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val entries = load()
+            if (entries.isEmpty()) return@withLock "{}"
+
+            val buffer = StringBuilder("{")
+            var first = true
+            for ((key, value) in entries) {
+                if (!first) buffer.append(',')
+                first = false
+                buffer.append(JSONObject.quote(key)).append(':').append(value)
+            }
+            buffer.append('}')
+            buffer.toString()
+        }
+    }
+
+    /** [jsonValue] is raw JSON text. Null removes the key. */
+    suspend fun set(key: String, jsonValue: String?) = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val entries = load()
+            if (jsonValue == null) entries.remove(key) else entries[key] = jsonValue
+
+            try {
+                file.parentFile?.mkdirs()
+                val json = JSONObject()
+                for ((k, v) in entries) json.put(k, JSONObject.wrap(decode(v)) ?: v)
+                file.writeText(json.toString())
+            } catch (_: Exception) {
+                // A failed write must not poison later writes.
+            }
+        }
+    }
+
+    private fun decode(raw: String): Any = try {
+        JSONTokener(raw).nextValue()
+    } catch (_: Exception) {
+        raw
+    }
+
+    companion object {
+        fun open(context: Context): AppStorage =
+            AppStorage(File(context.filesDir, "app_storage.json"))
+    }
+}

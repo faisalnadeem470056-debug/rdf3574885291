@@ -1,0 +1,52 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The screens are served by a loopback HTTP server inside the app.
+         Binding any socket, including 127.0.0.1, needs this permission.
+         Without it the app dies at start-up with SocketException: EPERM. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+{{PERMISSIONS}}
+
+    <application
+        android:label="{{APP_LABEL}}"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.GeneratedApp">
+
+{{ADS_META}}
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+{{DEEP_LINKS}}
+        </activity>
+
+{{PUSH_SERVICE}}
+        <!-- Fires notifications scheduled with native.scheduleNotification,
+             long after the app that asked for one has exited. -->
+        <receiver
+            android:name=".NotificationAlarmReceiver"
+            android:exported="false"/>
+
+        <!-- Hands the camera a file to write into, and the share sheet a file
+             to read, without exposing a file:// uri. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+    </application>
+</manifest>

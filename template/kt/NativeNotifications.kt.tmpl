@@ -1,0 +1,546 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as
+// assets/export/kt/NativeNotifications.kt.tmpl with only the package line
+// swapped (tools/sync_export_templates.sh).
+//
+// Tier 4: notifications now, notifications later, and keeping the screen on.
+//
+// A scheduled notification goes through AlarmManager rather than a coroutine
+// or a page timer, because the whole point is that it fires when the app is
+// closed. It is INEXACT by default: an exact alarm needs a special permission
+// that Play only grants to alarm-and-clock apps, and a reminder that lands a
+// few minutes late is a fair trade for an app that installs without review
+// trouble. Pass exact:true where it genuinely matters and the capability is
+// declared.
+//
+// Not covered here, deliberately: rescheduling after a reboot (needs
+// RECEIVE_BOOT_COMPLETED plus persisted state) and push, which needs a
+// Firebase project per app.
+// ---------------------------------------------------------------------------
+
+import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.view.WindowManager
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+/** The `native.*` calls this controller answers. */
+private val NOTIFICATION_KINDS = setOf(
+    "notify",
+    "scheduleNotification",
+    "cancelNotification",
+    "cancelAllNotifications",
+    "notificationsEnabled",
+    "keepAwake",
+    "pushToken",
+    "subscribeTopic",
+    "unsubscribeTopic",
+)
+
+// IMPORTANCE_HIGH, always. "Importance" is the only thing that decides whether
+// a notification arrives as a heads-up banner or just files itself into the
+// shade, and a generated app's notifications are meant to be seen.
+//
+// The id carries a suffix on purpose: a channel's importance is frozen the
+// moment it is first created, and re-creating it with a different importance is
+// ignored by the system. Changing the level means a new id, or every device
+// that ran an older build keeps the old behaviour for good.
+internal const val CHANNEL_ID_ALERTS = "generated_app_alerts_v2"
+private const val CHANNEL_NAME_ALERTS = "Alerts"
+
+internal const val EXTRA_ID = "notification_id"
+internal const val EXTRA_TITLE = "notification_title"
+internal const val EXTRA_BODY = "notification_body"
+internal const val EXTRA_DATA = "notification_data"
+
+/**
+ * Carries a tapped notification from whichever Activity receives it to the
+ * shell, which turns it into a `native:notification` event.
+ *
+ * A plain object because the tap can arrive before any page is listening --
+ * cold start, most obviously -- and the payload has to wait rather than be
+ * dropped.
+ */
+object NotificationBus {
+    @Volatile
+    private var pending: String? = null
+
+    @Volatile
+    private var listener: ((String) -> Unit)? = null
+
+    fun deliver(detailJson: String) {
+        val target = listener
+        // Straight to a live shell if there is one; otherwise it waits.
+        if (target != null) target(detailJson) else pending = detailJson
+    }
+
+    /** The shell registers while it is on screen, and takes any backlog. */
+    fun setListener(target: ((String) -> Unit)?) {
+        listener = target
+        if (target != null) take()?.let { target(it) }
+    }
+
+    /** Takes the payload, if any. Reading it clears it. */
+    fun take(): String? {
+        val value = pending
+        pending = null
+        return value
+    }
+
+    /** Pulls the payload out of an Activity intent, if it carries one. */
+    fun fromIntent(intent: Intent?): String? {
+        // A push the system showed while the app was closed (Firebase puts the
+        // message's data keys straight into the extras).
+        val extras = intent?.extras
+        if (intent?.getStringExtra(EXTRA_ID) == null && extras != null && extras.containsKey("google.message_id")) {
+            val data = JSONObject()
+            for (key in extras.keySet()) {
+                if (key.startsWith("google.") || key.startsWith("gcm.") || key == "from" || key == "collapse_key") continue
+                extras.getString(key)?.let { data.put(key, it) }
+            }
+            return JSONObject().put("id", extras.getString("google.message_id")).put("data", data).toString()
+        }
+        val id = intent?.getStringExtra(EXTRA_ID) ?: return null
+        val data = intent.getStringExtra(EXTRA_DATA).orEmpty().ifEmpty { "{}" }
+        return JSONObject()
+            .put("id", id)
+            .put("data", try {
+                JSONObject(data)
+            } catch (_: Exception) {
+                JSONObject()
+            })
+            .toString()
+    }
+}
+
+/** Fires a scheduled notification, long after the app that asked for it exited. */
+class NotificationAlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        showNotification(
+            context = context,
+            id = intent.getStringExtra(EXTRA_ID).orEmpty(),
+            title = intent.getStringExtra(EXTRA_TITLE).orEmpty(),
+            body = intent.getStringExtra(EXTRA_BODY).orEmpty(),
+            dataJson = intent.getStringExtra(EXTRA_DATA).orEmpty(),
+        )
+    }
+}
+
+class NativeNotificationController internal constructor(
+    private val context: Context,
+    private val permissions: NativePermissionController,
+    private val onResult: (id: Int, resultJson: String) -> Unit,
+    private val setKeepAwake: (Boolean) -> Unit,
+    private val push: PushBridge,
+) {
+
+    fun handles(kind: String): Boolean = kind in NOTIFICATION_KINDS
+
+    fun start(request: NativeUiRequest) {
+        when (request.kind) {
+            "notify" -> notify(request)
+            "scheduleNotification" -> schedule(request)
+            "cancelNotification" -> cancel(request)
+            "cancelAllNotifications" -> cancelAll(request)
+            "notificationsEnabled" -> onResult(
+                request.id,
+                permissionResultJson(
+                    if (areNotificationsEnabled()) PermissionState.GRANTED else PermissionState.DENIED,
+                ),
+            )
+
+            "pushToken" -> push.token { token ->
+                onResult(
+                    request.id,
+                    if (token == null) {
+                        JSONObject().put("error", "unavailable").toString()
+                    } else {
+                        JSONObject().put("token", token).toString()
+                    },
+                )
+            }
+
+            "subscribeTopic" -> push.subscribe(request.options.optString("topic")) { ok ->
+                onResult(request.id, if (ok) "true" else "false")
+            }
+
+            "unsubscribeTopic" -> push.unsubscribe(request.options.optString("topic")) { ok ->
+                onResult(request.id, if (ok) "true" else "false")
+            }
+
+            "keepAwake" -> {
+                setKeepAwake(request.options.optBoolean("on", false))
+                onResult(request.id, "true")
+            }
+
+            else -> onResult(request.id, "null")
+        }
+    }
+
+    private fun areNotificationsEnabled(): Boolean = try {
+        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .areNotificationsEnabled()
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun notify(request: NativeUiRequest) {
+        // POST_NOTIFICATIONS only exists from 33; below that, posting is
+        // allowed unless the user switched it off in settings.
+        permissions.ensure("notifications") { granted ->
+            if (!granted || !areNotificationsEnabled()) {
+                onResult(request.id, statusJson(false, "denied"))
+                return@ensure
+            }
+
+            val options = request.options
+            val shown = showNotification(
+                context = context,
+                id = options.optString("id").ifEmpty { System.currentTimeMillis().toString() },
+                title = options.optString("title"),
+                body = options.optString("body"),
+                dataJson = options.optJSONObject("data")?.toString().orEmpty(),
+            )
+            onResult(request.id, statusJson(shown, if (shown) "shown" else "unavailable"))
+        }
+    }
+
+    private fun schedule(request: NativeUiRequest) {
+        permissions.ensure("notifications") { granted ->
+            if (!granted) {
+                onResult(request.id, statusJson(false, "denied"))
+                return@ensure
+            }
+
+            val options = request.options
+            val id = options.optString("id").ifEmpty { System.currentTimeMillis().toString() }
+
+            val at = when {
+                options.has("inMs") -> System.currentTimeMillis() + options.optLong("inMs")
+                else -> parseWhen(options.optString("at")) ?: 0L
+            }
+            if (at <= System.currentTimeMillis()) {
+                // Firing immediately would be a surprise; the page can decide
+                // to notify() instead.
+                onResult(request.id, statusJson(false, "past"))
+                return@ensure
+            }
+
+            val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            if (manager == null) {
+                onResult(request.id, statusJson(false, "unavailable"))
+                return@ensure
+            }
+
+            val intent = Intent(context, NotificationAlarmReceiver::class.java).apply {
+                putExtra(EXTRA_ID, id)
+                putExtra(EXTRA_TITLE, options.optString("title"))
+                putExtra(EXTRA_BODY, options.optString("body"))
+                putExtra(EXTRA_DATA, options.optJSONObject("data")?.toString().orEmpty())
+            }
+            val pending = PendingIntent.getBroadcast(
+                context,
+                id.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+            val wantsExact = options.optBoolean("exact", false) && canScheduleExact(manager)
+            try {
+                if (wantsExact) {
+                    manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                } else {
+                    // Survives doze, and needs no special permission.
+                    manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                }
+                onResult(
+                    request.id,
+                    JSONObject()
+                        .put("ok", true)
+                        .put("id", id)
+                        .put("status", "scheduled")
+                        .put("exact", wantsExact)
+                        .toString(),
+                )
+            } catch (_: Exception) {
+                onResult(request.id, statusJson(false, "unavailable"))
+            }
+        }
+    }
+
+    private fun canScheduleExact(manager: AlarmManager): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                manager.canScheduleExactAlarms()
+            } catch (_: Exception) {
+                false
+            }
+        } else {
+            true
+        }
+
+    private fun cancel(request: NativeUiRequest) {
+        val id = request.options.optString("id")
+        if (id.isEmpty()) {
+            onResult(request.id, "false")
+            return
+        }
+
+        try {
+            // Both halves: one may be waiting in AlarmManager, the other
+            // already sitting in the shade.
+            val manager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            val intent = Intent(context, NotificationAlarmReceiver::class.java)
+            PendingIntent.getBroadcast(
+                context,
+                id.hashCode(),
+                intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            )?.let { manager?.cancel(it) }
+
+            notificationManager()?.cancel(id.hashCode())
+            onResult(request.id, "true")
+        } catch (_: Exception) {
+            onResult(request.id, "false")
+        }
+    }
+
+    private fun cancelAll(request: NativeUiRequest) {
+        try {
+            notificationManager()?.cancelAll()
+            onResult(request.id, "true")
+        } catch (_: Exception) {
+            onResult(request.id, "false")
+        }
+    }
+
+    private fun notificationManager(): NotificationManager? =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+
+    private fun statusJson(ok: Boolean, status: String): String =
+        JSONObject().put("ok", ok).put("status", status).toString()
+}
+
+/**
+ * Talks to the app's Firebase push code, if it has any.
+ *
+ * Reached by reflection on purpose: the shared native files ship into every
+ * export, but Firebase is only a dependency of apps that declared the "push"
+ * capability. A direct reference would force every generated app to carry FCM,
+ * and would stop the builder itself compiling. Where the class is absent --
+ * the preview, or an app without push -- every call answers "unavailable"
+ * instead of failing.
+ */
+class PushBridge(private val context: Context) {
+
+    private val support: Any? by lazy {
+        try {
+            Class.forName(context.packageName + ".PushSupport")
+                .getDeclaredField("INSTANCE")
+                .get(null)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    val isAvailable: Boolean get() = support != null
+
+    fun token(callback: (String?) -> Unit) {
+        val target = support ?: return callback(null)
+        try {
+            target.javaClass
+                .getMethod("token", Function1::class.java)
+                .invoke(target, callback as Function1<String?, Unit>)
+        } catch (_: Throwable) {
+            callback(null)
+        }
+    }
+
+    fun subscribe(topic: String, callback: (Boolean) -> Unit) = topicCall("subscribe", topic, callback)
+
+    fun unsubscribe(topic: String, callback: (Boolean) -> Unit) =
+        topicCall("unsubscribe", topic, callback)
+
+    private fun topicCall(method: String, topic: String, callback: (Boolean) -> Unit) {
+        val target = support ?: return callback(false)
+        if (topic.isEmpty()) return callback(false)
+        try {
+            target.javaClass
+                .getMethod(method, String::class.java, Function1::class.java)
+                .invoke(target, topic, callback as Function1<Boolean, Unit>)
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    /** Routes incoming pushes to the page while a shell is on screen. */
+    fun setListener(listener: ((event: String, json: String) -> Unit)?) {
+        val target = support ?: return
+        try {
+            target.javaClass
+                .getMethod("setListener", Function2::class.java)
+                .invoke(target, listener)
+        } catch (_: Throwable) {
+            // An older export without the listener hook.
+        }
+    }
+}
+
+@Composable
+fun rememberNativeNotifications(
+    permissions: NativePermissionController,
+    emit: (event: String, detailJson: String) -> Unit,
+    onResult: (id: Int, resultJson: String) -> Unit,
+): NativeNotificationController {
+    val context = LocalContext.current
+    val push = remember(context) { PushBridge(context) }
+
+    // Pushes arriving while a shell is up go straight to the page; the rest of
+    // the time the notification itself is the delivery.
+    DisposableEffect(push, emit) {
+        push.setListener(emit)
+        onDispose { push.setListener(null) }
+    }
+
+    return remember(context, permissions, onResult) {
+        NativeNotificationController(
+            context = context,
+            permissions = permissions,
+            onResult = onResult,
+            push = push,
+            setKeepAwake = { on ->
+                val window = context.findActivity()?.window
+                if (on) {
+                    window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            },
+        )
+    }
+}
+
+/**
+ * Creates the heads-up channel. Called at start-up, because a push shown by
+ * Firebase or OneSignal while the app is closed goes to this channel id too,
+ * and it must already exist then or Android falls back to a silent one.
+ */
+internal fun ensureAlertChannel(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    try {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID_ALERTS, CHANNEL_NAME_ALERTS, NotificationManager.IMPORTANCE_HIGH).apply {
+                enableVibration(true)
+                enableLights(true)
+            },
+        )
+    } catch (_: Exception) {
+        // Posting creates it again later.
+    }
+}
+
+/**
+ * Posts a notification. Shared by the immediate path and the alarm receiver,
+ * which runs in a process with no shell at all.
+ */
+internal fun showNotification(
+    context: Context,
+    id: String,
+    title: String,
+    body: String,
+    dataJson: String,
+): Boolean = try {
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID_ALERTS,
+                CHANNEL_NAME_ALERTS,
+                // HIGH is what makes it a banner over whatever is on screen,
+                // the way a message from any other app arrives.
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                enableVibration(true)
+                enableLights(true)
+            },
+        )
+    }
+
+    // The launch intent, so the tap works without this file knowing the app's
+    // Activity class name -- which differs in every export.
+    val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+        addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        putExtra(EXTRA_ID, id)
+        putExtra(EXTRA_DATA, dataJson)
+    }
+
+    val contentIntent = launch?.let {
+        PendingIntent.getActivity(
+            context,
+            id.hashCode(),
+            it,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Notification.Builder(context, CHANNEL_ID_ALERTS)
+    } else {
+        @Suppress("DEPRECATION")
+        Notification.Builder(context)
+    }
+
+    val notification = builder
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(Notification.BigTextStyle().bigText(body))
+        // The app's own icon: a generated app ships no notification artwork,
+        // and a missing icon means nothing is posted at all.
+        .setSmallIcon(context.applicationInfo.icon)
+        .setAutoCancel(true)
+        .apply {
+            contentIntent?.let { setContentIntent(it) }
+
+            // Below API 26 there are no channels, so priority and defaults are
+            // what produce the same heads-up behaviour.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                @Suppress("DEPRECATION")
+                setPriority(Notification.PRIORITY_HIGH)
+                @Suppress("DEPRECATION")
+                setDefaults(Notification.DEFAULT_ALL)
+            }
+        }
+        .build()
+
+    manager.notify(id.hashCode(), notification)
+    true
+} catch (_: Exception) {
+    false
+}
+
+/** 'YYYY-MM-DDTHH:mm' or 'YYYY-MM-DD' in local time, as epoch millis. */
+private fun parseWhen(value: String): Long? {
+    if (value.isBlank()) return null
+    val pattern = if (value.contains('T')) "yyyy-MM-dd'T'HH:mm" else "yyyy-MM-dd"
+    return try {
+        SimpleDateFormat(pattern, Locale.US).parse(value)?.time
+    } catch (_: Exception) {
+        null
+    }
+}

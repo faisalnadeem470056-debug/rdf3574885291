@@ -1,0 +1,319 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as assets/export/kt/NativeApp.kt.tmpl
+// with only the package line swapped (tools/sync_export_templates.sh).
+//
+// Tier 6: what an app knows about itself and how it reaches the store.
+//
+//   * secure storage -- for a token or a PIN, encrypted at rest, kept apart
+//     from native.storage (which is injected into every page and therefore
+//     readable by any screen's JavaScript);
+//   * app info -- version and package, so a page can show "v1.4.2" without
+//     the model hardcoding a number that goes stale;
+//   * the in-app review prompt and the store page;
+//   * deep links, which arrive as an event.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.json.JSONObject
+
+/** The `native.*` calls this controller answers. */
+private val APP_KINDS = setOf(
+    "appInfo",
+    "secureSet",
+    "secureGet",
+    "secureRemove",
+    "requestReview",
+    "openStorePage",
+    "initialLink",
+)
+
+/**
+ * Carries a deep link from the Activity to the shell.
+ *
+ * Same shape as [NotificationBus] and for the same reason: a link that launches
+ * the app arrives long before any page exists to hear about it.
+ */
+object DeepLinkBus {
+    @Volatile
+    private var pending: String? = null
+
+    /** The link the app was launched with, kept for `native.initialLink()`. */
+    @Volatile
+    var initial: String? = null
+        private set
+
+    @Volatile
+    private var listener: ((String) -> Unit)? = null
+
+    fun deliver(detailJson: String) {
+        if (initial == null) initial = detailJson
+        val target = listener
+        // Straight to a live shell if there is one; otherwise it waits.
+        if (target != null) target(detailJson) else pending = detailJson
+    }
+
+    /** The shell registers while it is on screen, and takes any backlog. */
+    fun setListener(target: ((String) -> Unit)?) {
+        listener = target
+        if (target != null) take()?.let { target(it) }
+    }
+
+    fun take(): String? {
+        val value = pending
+        pending = null
+        return value
+    }
+
+    /** Describes an incoming link for the page: full url, path and query. */
+    fun fromIntent(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        if (intent.action != Intent.ACTION_VIEW) return null
+
+        val query = JSONObject()
+        try {
+            for (name in data.queryParameterNames) query.put(name, data.getQueryParameter(name))
+        } catch (_: Exception) {
+            // An opaque uri has no query parameters to read.
+        }
+
+        return JSONObject()
+            .put("url", data.toString())
+            .put("scheme", data.scheme.orEmpty())
+            .put("host", data.host.orEmpty())
+            .put("path", data.path.orEmpty())
+            .put("query", query)
+            .toString()
+    }
+}
+
+class NativeAppController internal constructor(
+    private val context: Context,
+    private val onResult: (id: Int, resultJson: String) -> Unit,
+) {
+
+    fun handles(kind: String): Boolean = kind in APP_KINDS
+
+    fun start(request: NativeUiRequest) {
+        when (request.kind) {
+            "appInfo" -> onResult(request.id, appInfoJson())
+            "secureSet" -> secureSet(request)
+            "secureGet" -> secureGet(request)
+            "secureRemove" -> secureRemove(request)
+            "requestReview" -> requestReview(request)
+            "openStorePage" -> openStorePage(request)
+            "initialLink" -> onResult(request.id, DeepLinkBus.initial ?: "null")
+            else -> onResult(request.id, "null")
+        }
+    }
+
+    // ---- App info ----------------------------------------------------
+
+    private fun appInfoJson(): String = try {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        val versionCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+
+        JSONObject()
+            .put("package", context.packageName)
+            .put("version", info.versionName.orEmpty())
+            .put("build", versionCode)
+            .put("installedAt", info.firstInstallTime)
+            .put("updatedAt", info.lastUpdateTime)
+            .put(
+                "debug",
+                (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+            )
+            .toString()
+    } catch (_: Exception) {
+        JSONObject().put("error", "unavailable").toString()
+    }
+
+    // ---- Secure storage ----------------------------------------------
+
+    /**
+     * Reached through the SecureStoreSupport adapter, which ships only with the
+     * "secureStorage" capability. Keeping androidx.security behind reflection
+     * is what lets the builder -- and any app that never asks for it -- avoid
+     * the dependency entirely.
+     *
+     * Separate from `native.storage` on purpose: that one is injected into
+     * every page as `window.__STORE__`, so anything in it is readable by any
+     * screen's JavaScript. This is not.
+     */
+    private val secureStore: Any? by lazy {
+        try {
+            Class.forName(context.packageName + ".SecureStoreSupport")
+                .getDeclaredField("INSTANCE")
+                .get(null)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun secureCall(method: String, key: String, value: String?): Any? {
+        val target = secureStore ?: return null
+        return try {
+            if (value == null && method == "set") return null
+            when (method) {
+                "set" -> target.javaClass
+                    .getMethod("set", Context::class.java, String::class.java, String::class.java)
+                    .invoke(target, context, key, value)
+
+                "get" -> target.javaClass
+                    .getMethod("get", Context::class.java, String::class.java)
+                    .invoke(target, context, key)
+
+                else -> target.javaClass
+                    .getMethod("remove", Context::class.java, String::class.java)
+                    .invoke(target, context, key)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun secureSet(request: NativeUiRequest) {
+        val key = request.options.optString("key")
+        if (secureStore == null || key.isEmpty()) {
+            onResult(request.id, unavailable())
+            return
+        }
+
+        val value = if (request.options.isNull("value")) null else request.options.optString("value")
+        val ok = if (value == null) {
+            secureCall("remove", key, null) == true
+        } else {
+            // A null value would be dropped by the reflective call, so removal
+            // goes through the remove path instead.
+            val target = secureStore
+            try {
+                target?.javaClass
+                    ?.getMethod("set", Context::class.java, String::class.java, String::class.java)
+                    ?.invoke(target, context, key, value) == true
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        onResult(request.id, if (ok) "true" else "false")
+    }
+
+    private fun secureGet(request: NativeUiRequest) {
+        val key = request.options.optString("key")
+        if (secureStore == null) {
+            onResult(request.id, unavailable())
+            return
+        }
+        val value = secureCall("get", key, null) as? String
+        onResult(request.id, if (value == null) "null" else JSONObject.quote(value))
+    }
+
+    private fun secureRemove(request: NativeUiRequest) {
+        if (secureStore == null) {
+            onResult(request.id, unavailable())
+            return
+        }
+        secureCall("remove", request.options.optString("key"), null)
+        onResult(request.id, "true")
+    }
+
+    private fun unavailable(): String = JSONObject()
+        .put("error", "unavailable")
+        .put(
+            "hint",
+            "Declare the secureStorage capability with set_permissions; it is not built in.",
+        )
+        .toString()
+
+    // ---- Store ------------------------------------------------------
+
+    /**
+     * The Play in-app review prompt, through the ReviewSupport adapter.
+     *
+     * Play decides whether it actually appears -- there is a quota, and it
+     * never shows for a sideloaded build -- and gives no way to find out. So
+     * this resolves "asked" at best, never "the user rated you", and page code
+     * must not gate anything on it.
+     */
+    private fun requestReview(request: NativeUiRequest) {
+        val support = try {
+            Class.forName(context.packageName + ".ReviewSupport")
+                .getDeclaredField("INSTANCE")
+                .get(null)
+        } catch (_: Throwable) {
+            null
+        }
+
+        if (support == null) {
+            onResult(request.id, unavailable())
+            return
+        }
+
+        val callback: (Boolean, String) -> Unit = { asked, status ->
+            onResult(request.id, statusJson(asked, status))
+        }
+
+        try {
+            support.javaClass
+                .getMethod("request", Context::class.java, Function2::class.java)
+                .invoke(support, context, callback as Function2<Boolean, String, Unit>)
+        } catch (_: Throwable) {
+            onResult(request.id, statusJson(false, "unavailable"))
+        }
+    }
+
+    private fun openStorePage(request: NativeUiRequest) {
+        val id = request.options.optString("package").ifEmpty { context.packageName }
+
+        // The Play app first, the web listing as the fallback -- a device
+        // without Play still gets somewhere useful.
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$id"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val web = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://play.google.com/store/apps/details?id=$id"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        onResult(request.id, if (startFirstAvailable(market, web)) "true" else "false")
+    }
+
+    private fun startFirstAvailable(vararg intents: Intent): Boolean {
+        for (intent in intents) {
+            try {
+                context.startActivity(intent)
+                return true
+            } catch (_: Exception) {
+                // Try the next one.
+            }
+        }
+        return false
+    }
+
+    private fun statusJson(ok: Boolean, status: String): String =
+        JSONObject().put("ok", ok).put("status", status).toString()
+}
+
+@Composable
+fun rememberNativeApp(onResult: (id: Int, resultJson: String) -> Unit): NativeAppController {
+    val context = LocalContext.current
+    return remember(context, onResult) { NativeAppController(context, onResult) }
+}
+
+/** Unused today, but the obvious next thing a caller reaches for. */
+internal fun Context.isInstalled(packageName: String): Boolean = try {
+    packageManager.getPackageInfo(packageName, 0)
+    true
+} catch (_: PackageManager.NameNotFoundException) {
+    false
+}

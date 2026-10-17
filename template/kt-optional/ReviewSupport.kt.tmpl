@@ -1,0 +1,52 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// The Play in-app review adapter, emitted ONLY when the project declares the
+// "review" capability. The only file touching com.google.android.play:review.
+//
+// Play decides whether the prompt actually appears -- there is a quota, and it
+// never shows for a sideloaded build -- and gives no way to find out, which is
+// also why the builder has no copy of this: it could not do anything useful in
+// a preview.
+// ---------------------------------------------------------------------------
+
+import android.app.Activity
+import android.content.Context
+import com.google.android.play.core.review.ReviewManagerFactory
+
+@Suppress("unused") // Reached by reflection from the shared shell.
+object ReviewSupport {
+
+    /** [callback] receives (asked, status); "asked" is the most Play will tell you. */
+    @JvmStatic
+    fun request(context: Context, callback: (Boolean, String) -> Unit) {
+        val activity = findActivity(context)
+        if (activity == null) {
+            callback(false, "unavailable")
+            return
+        }
+
+        try {
+            val manager = ReviewManagerFactory.create(context)
+            manager.requestReviewFlow().addOnCompleteListener { task ->
+                if (!task.isSuccessful) {
+                    callback(false, "unavailable")
+                    return@addOnCompleteListener
+                }
+                manager.launchReviewFlow(activity, task.result)
+                    .addOnCompleteListener { callback(true, "asked") }
+            }
+        } catch (_: Throwable) {
+            callback(false, "unavailable")
+        }
+    }
+
+    private fun findActivity(context: Context): Activity? {
+        var current = context
+        while (current is android.content.ContextWrapper) {
+            if (current is Activity) return current
+            current = current.baseContext
+        }
+        return null
+    }
+}

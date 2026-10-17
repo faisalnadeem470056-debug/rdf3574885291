@@ -1,0 +1,345 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as
+// assets/export/kt/NativePermissions.kt.tmpl with only the package line
+// swapped (tools/sync_export_templates.sh).
+//
+// One table maps a capability ("camera", "location", ...) to the permissions
+// it needs. THREE things read it, which is the whole point of having it in one
+// place:
+//
+//   * the exporter, to write <uses-permission> lines into the generated
+//     AndroidManifest.xml -- a permission that is not declared cannot be
+//     granted at runtime, it just fails;
+//   * this controller, to ask for the dangerous ones at the moment the feature
+//     is used;
+//   * the agent's set_permissions tool, to validate what it is asked for.
+//
+// Adding a capability means adding a row here and nothing else.
+// ---------------------------------------------------------------------------
+
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import org.json.JSONObject
+
+/** One thing an app can do, and what the platform demands before it can. */
+data class NativeCapability(
+    val id: String,
+    /** Goes into AndroidManifest.xml. Without it, a runtime request is refused outright. */
+    val manifestPermissions: List<String>,
+    /**
+     * The subset that is "dangerous" and has to be granted by the user at
+     * runtime. Empty means declaring it is enough.
+     */
+    val runtimePermissions: List<String> = manifestPermissions,
+    /** Only declared from this API level up (e.g. POST_NOTIFICATIONS is 33+). */
+    val minSdk: Int = 0,
+    /** Only declared up to this API level, written as android:maxSdkVersion. */
+    val maxSdk: Int? = null,
+    /**
+     * Gradle coordinates the exported app needs for this capability, and the
+     * builder does not. Everything here is reached through an adapter that
+     * ships only with the capability, so nothing links against it otherwise.
+     */
+    val dependencies: List<String> = emptyList(),
+    /**
+     * The adapter emitted into the export for this capability, from
+     * assets/export/kt-optional/. Reached by reflection from the shared code.
+     */
+    val adapter: String? = null,
+    /** True when the capability needs a FragmentActivity host. */
+    val needsFragmentActivity: Boolean = false,
+    val description: String,
+)
+
+object NativeCapabilities {
+
+    val ALL: List<NativeCapability> = listOf(
+        NativeCapability(
+            id = "camera",
+            manifestPermissions = listOf("android.permission.CAMERA"),
+            // The picker and the capture intent are platform APIs; no library.
+            description = "Take photos in the app with native.pickImage({source:'camera'}).",
+        ),
+        NativeCapability(
+            id = "microphone",
+            manifestPermissions = listOf("android.permission.RECORD_AUDIO"),
+            description = "Record audio.",
+        ),
+        NativeCapability(
+            id = "location",
+            manifestPermissions = listOf(
+                "android.permission.ACCESS_FINE_LOCATION",
+                "android.permission.ACCESS_COARSE_LOCATION",
+            ),
+            description = "Read the device's location.",
+        ),
+        NativeCapability(
+            id = "notifications",
+            manifestPermissions = listOf("android.permission.POST_NOTIFICATIONS"),
+            // Below 33 notifications need no permission at all, and declaring
+            // it there is noise in the store listing.
+            minSdk = 33,
+            description = "Show notifications.",
+        ),
+        NativeCapability(
+            id = "network",
+            manifestPermissions = listOf("android.permission.ACCESS_NETWORK_STATE"),
+            // Normal permission: reading connectivity never prompts.
+            runtimePermissions = emptyList(),
+            description = "Read connectivity state and watch for changes (native.network).",
+        ),
+        NativeCapability(
+            id = "push",
+            // FCM needs no permission of its own; showing what arrives does.
+            manifestPermissions = listOf("android.permission.POST_NOTIFICATIONS"),
+            minSdk = 33,
+            description = "Firebase push (native.pushToken, native:push). The exported app " +
+                "gets the FCM wiring, but it only works once YOUR google-services.json is " +
+                "added to app/ -- say so rather than promising it works out of the box.",
+        ),
+        NativeCapability(
+            id = "exactAlarm",
+            manifestPermissions = listOf("android.permission.SCHEDULE_EXACT_ALARM"),
+            // The user grants this in system settings, not through a prompt,
+            // and scheduling falls back to inexact without it.
+            runtimePermissions = emptyList(),
+            minSdk = 31,
+            description = "Notifications that fire at an exact minute " +
+                "(native.scheduleNotification with exact:true). Only declare it when " +
+                "a late reminder would be useless -- Play restricts this permission.",
+        ),
+        NativeCapability(
+            id = "contacts",
+            manifestPermissions = listOf("android.permission.READ_CONTACTS"),
+            description = "Read the device's contacts.",
+        ),
+        NativeCapability(
+            id = "calendar",
+            manifestPermissions = listOf(
+                "android.permission.READ_CALENDAR",
+                "android.permission.WRITE_CALENDAR",
+            ),
+            description = "Read and add calendar events.",
+        ),
+        NativeCapability(
+            id = "vibrate",
+            manifestPermissions = listOf("android.permission.VIBRATE"),
+            // Normal permission: declaring it is the whole job.
+            runtimePermissions = emptyList(),
+            description = "Vibration patterns beyond the standard haptic tick.",
+        ),
+        NativeCapability(
+            id = "biometric",
+            manifestPermissions = listOf("android.permission.USE_BIOMETRIC"),
+            runtimePermissions = emptyList(),
+            dependencies = listOf(
+                "androidx.biometric:biometric:1.1.0",
+                // biometric:1.1.0 pins a fragment old enough to reject
+                // ActivityResult's request codes, which breaks every runtime
+                // permission prompt. Forcing a current one is mandatory.
+                "androidx.fragment:fragment-ktx:1.8.9",
+            ),
+            adapter = "BiometricSupport",
+            needsFragmentActivity = true,
+            description = "Fingerprint or face unlock inside the app (native.biometric).",
+        ),
+        NativeCapability(
+            id = "barcode",
+            // The scanner runs the camera inside Play services, so the app
+            // itself needs no CAMERA permission.
+            manifestPermissions = emptyList(),
+            dependencies = listOf("com.google.android.gms:play-services-code-scanner:16.1.0"),
+            adapter = "BarcodeSupport",
+            description = "Scan barcodes and QR codes (native.scanBarcode).",
+        ),
+        NativeCapability(
+            id = "secureStorage",
+            manifestPermissions = emptyList(),
+            dependencies = listOf("androidx.security:security-crypto:1.0.0"),
+            adapter = "SecureStoreSupport",
+            description = "Encrypted storage for tokens and PINs (native.secure.*).",
+        ),
+        NativeCapability(
+            id = "review",
+            manifestPermissions = emptyList(),
+            dependencies = listOf("com.google.android.play:review-ktx:2.0.2"),
+            adapter = "ReviewSupport",
+            description = "The Play in-app review prompt (native.requestReview).",
+        ),
+        NativeCapability(
+            id = "ads",
+            manifestPermissions = emptyList(),
+            dependencies = listOf("com.google.android.gms:play-services-ads:23.6.0"),
+            adapter = "AdsSupport",
+            description = "AdMob banner, interstitial and rewarded ads. Configure with set_ads.",
+        ),
+    )
+
+    val IDS: List<String> = ALL.map { it.id }
+
+    fun byId(id: String): NativeCapability? = ALL.firstOrNull { it.id == id }
+
+    /**
+     * `<uses-permission>` lines for a set of capability ids, deduplicated and
+     * sorted so the generated manifest is stable between exports.
+     */
+    /** Gradle lines for the declared capabilities, deduplicated. */
+    fun dependencyLines(ids: Collection<String>): List<String> =
+        ids.mapNotNull { byId(it) }
+            .flatMap { it.dependencies }
+            .distinct()
+            .sorted()
+            .map { "    implementation(\"$it\")" }
+
+    /** Adapters to emit, one per declared capability that has one. */
+    fun adapters(ids: Collection<String>): List<String> =
+        ids.mapNotNull { byId(it)?.adapter }.distinct()
+
+    /** BiometricPrompt is the only thing that forces a FragmentActivity host. */
+    fun needsFragmentActivity(ids: Collection<String>): Boolean =
+        ids.mapNotNull { byId(it) }.any { it.needsFragmentActivity }
+
+    fun manifestLines(ids: Collection<String>): List<String> {
+        val lines = sortedSetOf<String>()
+        for (id in ids) {
+            val capability = byId(id) ?: continue
+            for (permission in capability.manifestPermissions) {
+                val attributes = StringBuilder("android:name=\"$permission\"")
+                capability.maxSdk?.let { attributes.append(" android:maxSdkVersion=\"$it\"") }
+                lines.add("    <uses-permission $attributes/>")
+            }
+        }
+        return lines.toList()
+    }
+}
+
+/** What a page gets back when it asks about a permission. */
+enum class PermissionState { GRANTED, DENIED, UNAVAILABLE }
+
+/**
+ * Asks for the dangerous permissions a capability needs, at the moment the
+ * feature is used rather than at start-up.
+ */
+class NativePermissionController internal constructor(
+    private val context: Context,
+    private val request: (List<String>, (Boolean) -> Unit) -> Unit,
+) {
+
+    /**
+     * Whether the running app declares [permission] at all. A request for
+     * something the manifest does not declare is denied instantly by the
+     * platform, so it is worth telling the difference.
+     */
+    fun isDeclared(permission: String): Boolean = try {
+        val info = context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_PERMISSIONS,
+        )
+        info.requestedPermissions?.contains(permission) == true
+    } catch (_: Exception) {
+        false
+    }
+
+    fun isGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    fun state(capabilityId: String): PermissionState {
+        val capability = NativeCapabilities.byId(capabilityId) ?: return PermissionState.UNAVAILABLE
+
+        val needed = capability.runtimePermissions.filter { isDeclared(it) }
+        if (capability.runtimePermissions.isNotEmpty() && needed.isEmpty()) {
+            // Declared by nobody: the feature cannot work in this build.
+            return PermissionState.UNAVAILABLE
+        }
+        if (needed.isEmpty()) return PermissionState.GRANTED
+
+        // Location asks for fine and coarse together; either one counts.
+        return if (needed.any { isGranted(it) }) PermissionState.GRANTED else PermissionState.DENIED
+    }
+
+    /**
+     * Runs [onResult] with true once every permission the capability needs is
+     * granted. Already-granted capabilities do not prompt.
+     */
+    fun ensure(capabilityId: String, onResult: (Boolean) -> Unit) {
+        val capability = NativeCapabilities.byId(capabilityId)
+        if (capability == null) {
+            onResult(false)
+            return
+        }
+
+        val needed = capability.runtimePermissions
+            .filter { isDeclared(it) }
+            .filterNot { isGranted(it) }
+            .filter { Build.VERSION.SDK_INT >= capability.minSdk }
+
+        if (needed.isEmpty()) {
+            // Either nothing to ask for, or the app never declared it -- in
+            // which case the feature runs without the permission (a camera
+            // intent, for instance) rather than being blocked on a prompt that
+            // can only fail.
+            onResult(true)
+            return
+        }
+
+        request(needed, onResult)
+    }
+}
+
+@Composable
+fun rememberNativePermissions(): NativePermissionController {
+    val context = LocalContext.current
+    val callback = remember { arrayOfNulls<(Boolean) -> Unit>(1) }
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        val done = callback[0]
+        callback[0] = null
+        // Any granted is enough: the only multi-permission capability is
+        // location, where coarse alone is still a usable answer.
+        done?.invoke(results.values.any { it })
+    }
+
+    return remember(context) {
+        NativePermissionController(context) { permissions, done ->
+            callback[0]?.invoke(false)
+            callback[0] = done
+            launcher.launch(permissions.toTypedArray())
+        }
+    }
+}
+
+/** Answer for `native.requestPermission` / `native.permissionStatus`. */
+fun permissionResultJson(state: PermissionState): String = JSONObject()
+    .put("granted", state == PermissionState.GRANTED)
+    .put(
+        "status",
+        when (state) {
+            PermissionState.GRANTED -> "granted"
+            PermissionState.DENIED -> "denied"
+            PermissionState.UNAVAILABLE -> "unavailable"
+        },
+    )
+    .toString()
+
+/** The hosting Activity, needed for anything that shows a system prompt. */
+fun Context.findActivity(): Activity? {
+    var current = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}

@@ -1,0 +1,74 @@
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+{{PUSH_PLUGIN}}
+
+android {
+    namespace = "{{PACKAGE}}"
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId = "{{PACKAGE}}"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+{{SIGNING}}
+
+    buildFeatures {
+        compose = true
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
+    implementation(composeBom)
+
+    implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.activity:activity-compose:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
+
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.material3:material3")
+    // The manifest's icon names map onto the extended set (grid_view, wallet,
+    // library_books...), which is not in the core icon package.
+    implementation("androidx.compose.material:material-icons-extended")
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+
+    // Pull-to-refresh over a WebView. Compose's PullToRefreshBox listens for
+    // nested scroll from a Compose scrollable, which a WebView is not, so the
+    // gesture never fired; the View-system widget speaks the WebView's own
+    // nested-scroll protocol.
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+
+{{PUSH_DEPENDENCY}}
+
+    // Exactly the libraries this app's capabilities need, and nothing else.
+{{CAPABILITY_DEPENDENCIES}}
+
+}

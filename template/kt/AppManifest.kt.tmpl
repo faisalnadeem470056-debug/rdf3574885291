@@ -1,0 +1,461 @@
+package {{PACKAGE}}
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.AccountBalanceWallet
+import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.CalendarToday
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.LibraryBooks
+import androidx.compose.material.icons.outlined.ListAlt
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.NotificationsNone
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PlayCircleOutline
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Parsed `assets/www/project.json`. This drives the native chrome, so the shell
+ * never hardcodes screen or tab names -- edit that file and the app changes.
+ */
+data class AppManifest(
+    val name: String,
+    val theme: AppTheme,
+    val screens: List<AppScreen>,
+    val tabs: List<AppTab>,
+    val appBar: AppBarSpec = AppBarSpec(),
+    val drawer: DrawerSpec = DrawerSpec(),
+    /** Floating action button. */
+    val fab: FabSpec = FabSpec(),
+    /** Tabs under the app bar, used instead of bottom tabs. */
+    val topTabs: List<AppTab> = emptyList(),
+    /** AdMob. Off unless the project asked for it. */
+    val ads: AdsSpec = AdsSpec(),
+    /**
+     * Look of the native components (dialogs, sheets, pickers, snackbar,
+     * loading). Kept as raw JSON: `resolveComponentStyles` reads the keys it
+     * knows and derives the rest from the theme.
+     */
+    val components: JSONObject = JSONObject(),
+    /** 'standard' (Material bar) | 'floating' (a pill floating above the page). */
+    val tabBarStyle: String = "standard",
+    /** False: icons only, no labels under the tab icons. */
+    val tabBarLabels: Boolean = true,
+    /** A raised round button in the middle of the bottom tabs, or null. */
+    val tabBarCenter: ActionSpec? = null,
+    /** 'raised' (a small part above the bar's edge) | 'inside' (flush in the bar). */
+    val tabBarCenterPosition: String = "raised",
+    /** The active tab as a filled pill with icon + label side by side; the others icons only. */
+    val tabBarExpand: Boolean = false,
+) {
+    val isFloatingTabBar: Boolean get() = tabBarStyle == "floating"
+
+    /**
+     * How the centre button is drawn: "tab" (3 or 5 tabs: the middle tab is the
+     * round button), "button" (2 or 4 tabs: an extra one between them) or null.
+     */
+    val centreKind: String?
+        get() = when {
+            tabBarCenter == null -> null
+            tabs.size == 3 || tabs.size == 5 -> "tab"
+            (tabs.size == 2 || tabs.size == 4) && (tabBarCenter.id.isNotEmpty() || tabBarCenter.screenId.isNotEmpty()) -> "button"
+            else -> null
+        }
+
+    fun screenById(id: String): AppScreen? = screens.firstOrNull { it.id == id }
+
+    /**
+     * Screens shown as tabs; falls back to the first screen so a single-screen
+     * app needs no special casing.
+     */
+    val tabScreens: List<AppScreen>
+        get() {
+            // Top tabs and bottom tabs drive the same screen list; an app uses
+            // one or the other.
+            val navigation = tabs.ifEmpty { topTabs }
+            return if (navigation.isEmpty()) {
+                listOfNotNull(screens.firstOrNull())
+            } else {
+                navigation.mapNotNull { screenById(it.screenId) }
+            }
+        }
+
+    companion object {
+        fun parse(source: String): AppManifest = fromJson(JSONObject(source))
+
+        fun fromJson(json: JSONObject): AppManifest = AppManifest(
+            name = json.optString("name").ifEmpty { "App" },
+            theme = AppTheme.fromJson(json.optJSONObject("theme") ?: JSONObject()),
+            screens = json.optJSONArray("screens").objects().map { AppScreen.fromJson(it) },
+            tabs = json.optJSONArray("tabs").objects().map { AppTab.fromJson(it) },
+            appBar = AppBarSpec.fromJson(json.optJSONObject("appBar") ?: JSONObject()),
+            drawer = DrawerSpec.fromJson(json.optJSONObject("drawer") ?: JSONObject()),
+            fab = FabSpec.fromJson(json.optJSONObject("fab") ?: JSONObject()),
+            topTabs = json.optJSONArray("topTabs").objects().map { AppTab.fromJson(it) },
+            ads = AdsSpec.fromJson(json.optJSONObject("ads") ?: JSONObject()),
+            components = json.optJSONObject("components") ?: JSONObject(),
+            tabBarStyle = json.optJSONObject("tabBar")?.optString("style").orEmpty().ifEmpty { "standard" },
+            tabBarLabels = json.optJSONObject("tabBar")?.optBoolean("labels", true) ?: true,
+            tabBarCenter = parseTabBarCenter(json.optJSONObject("tabBar")),
+            tabBarCenterPosition = json.optJSONObject("tabBar")?.optJSONObject("center")?.optString("position").orEmpty()
+                .takeIf { it == "inside" } ?: "raised",
+            tabBarExpand = json.optJSONObject("tabBar")?.optBoolean("expand", false) ?: false,
+        )
+    }
+}
+
+/** tabBar.center -> an action for the raised centre button, or null. */
+private fun parseTabBarCenter(json: JSONObject?): ActionSpec? {
+    val c = json?.optJSONObject("center") ?: return null
+    if (c.has("enabled") && !c.optBoolean("enabled", true)) return null
+    val action = c.optString("action")
+    val screen = c.optString("screen")
+    // middleTab only (3 or 5 tabs): no target of its own, the middle tab is the button.
+    if (action.isEmpty() && screen.isEmpty()) {
+        return if (c.optBoolean("middleTab", false)) ActionSpec(id = "", icon = "", label = "", screenId = "") else null
+    }
+    return ActionSpec(
+        id = action.ifEmpty { "tab_center" },
+        icon = c.optString("icon").ifEmpty { "add_circle" },
+        label = c.optString("label"),
+        screenId = screen,
+    )
+}
+
+data class AppScreen(
+    val id: String,
+    val title: String,
+    val showAppBar: Boolean = true,
+    /** Native pull-to-refresh; the page hears it as `native:refresh`. */
+    val pullToRefresh: Boolean = false,
+    /** 'auto' | 'portrait' | 'landscape' */
+    val orientation: String = "auto",
+    /** Hides the status and navigation bars for this screen. */
+    val fullScreen: Boolean = false,
+) {
+    val htmlPath: String get() = "screens/$id.html"
+
+    companion object {
+        fun fromJson(json: JSONObject): AppScreen {
+            val id = json.optString("id")
+            return AppScreen(
+                id = id,
+                title = json.optString("title").ifEmpty { id },
+                showAppBar = json.optBoolean("showAppBar", true),
+                pullToRefresh = json.optBoolean("pullToRefresh", false),
+                orientation = json.optString("orientation").ifEmpty { "auto" },
+                fullScreen = json.optBoolean("fullScreen", false),
+            )
+        }
+    }
+}
+
+data class AppTab(val label: String, val icon: String, val screenId: String) {
+    companion object {
+        fun fromJson(json: JSONObject): AppTab = AppTab(
+            label = json.optString("label"),
+            icon = json.optString("icon").ifEmpty { "circle" },
+            screenId = json.optString("screen").ifEmpty { json.optString("screenId") },
+        )
+    }
+}
+
+/** Native app bar layout. */
+data class AppBarSpec(
+    val titleAlignment: String = "left",
+    val logoIcon: String = "",
+    /** Asset path relative to assets/www, e.g. `shared/logo.png`. */
+    val logoImage: String = "",
+    val actions: List<ActionSpec> = emptyList(),
+    /** Overflow (3-dot) menu. */
+    val menu: List<ActionSpec> = emptyList(),
+    /** Native search field in the app bar. */
+    val search: SearchSpec = SearchSpec(),
+    /** 'small' | 'large': a taller bar with a big title on the tab screens. */
+    val style: String = "small",
+) {
+    val isCentered: Boolean get() = titleAlignment == "center"
+    val isLarge: Boolean get() = style == "large"
+
+    companion object {
+        fun fromJson(json: JSONObject): AppBarSpec = AppBarSpec(
+            titleAlignment = json.optString("titleAlignment").ifEmpty { "left" },
+            logoIcon = json.optString("logoIcon"),
+            logoImage = json.optString("logoImage"),
+            actions = json.optJSONArray("actions").objects().map { ActionSpec.fromJson(it) },
+            menu = json.optJSONArray("menu").objects().map { ActionSpec.fromJson(it) },
+            search = SearchSpec.fromJson(json.optJSONObject("search") ?: JSONObject()),
+            style = json.optString("style").ifEmpty { "small" },
+        )
+    }
+}
+
+/**
+ * The floating action button. With a [label] it renders as an extended FAB;
+ * tapping it opens [screenId] or hands [actionId] to the page.
+ */
+data class FabSpec(
+    val enabled: Boolean = false,
+    val icon: String = "add_circle",
+    val label: String = "",
+    val actionId: String = "",
+    val screenId: String = "",
+    /** Screen ids it appears on. Empty means every screen. */
+    val screens: List<String> = emptyList(),
+) {
+    fun visibleOn(screenId: String): Boolean =
+        enabled && (screens.isEmpty() || screenId in screens)
+
+    companion object {
+        fun fromJson(json: JSONObject): FabSpec = FabSpec(
+            enabled = json.optBoolean("enabled", false),
+            icon = json.optString("icon").ifEmpty { "add_circle" },
+            label = json.optString("label"),
+            actionId = json.optString("action"),
+            screenId = json.optString("screen").ifEmpty { json.optString("screenId") },
+            screens = json.optJSONArray("screens").strings(),
+        )
+    }
+}
+
+/**
+ * AdMob configuration.
+ *
+ * In test mode every unit is swapped for Google's public test units, which
+ * always fill and never bill anyone. Going live means real ids AND testMode
+ * false -- tapping a live ad on your own device is what gets an account banned.
+ */
+data class AdsSpec(
+    val enabled: Boolean = false,
+    val appId: String = "",
+    val bannerUnitId: String = "",
+    val interstitialUnitId: String = "",
+    val rewardedUnitId: String = "",
+    /** 'bottom' | 'top' */
+    val bannerPosition: String = "bottom",
+    val bannerScreens: List<String> = emptyList(),
+    val testMode: Boolean = true,
+) {
+    fun bannerVisibleOn(screenId: String): Boolean =
+        enabled && (bannerScreens.isEmpty() || screenId in bannerScreens)
+
+    companion object {
+        fun fromJson(json: JSONObject): AdsSpec = AdsSpec(
+            enabled = json.optBoolean("enabled", false),
+            appId = json.optString("appId"),
+            bannerUnitId = json.optString("banner"),
+            interstitialUnitId = json.optString("interstitial"),
+            rewardedUnitId = json.optString("rewarded"),
+            bannerPosition = json.optString("bannerPosition").ifEmpty { "bottom" },
+            bannerScreens = json.optJSONArray("bannerScreens").strings(),
+            testMode = json.optBoolean("testMode", true),
+        )
+    }
+}
+
+/** Native search in the app bar; the page filters from `native:search`. */
+data class SearchSpec(
+    val enabled: Boolean = false,
+    val placeholder: String = "Search",
+    val screens: List<String> = emptyList(),
+) {
+    fun visibleOn(screenId: String): Boolean =
+        enabled && (screens.isEmpty() || screenId in screens)
+
+    companion object {
+        fun fromJson(json: JSONObject): SearchSpec = SearchSpec(
+            enabled = json.optBoolean("enabled", false),
+            placeholder = json.optString("placeholder").ifEmpty { "Search" },
+            screens = json.optJSONArray("screens").strings(),
+        )
+    }
+}
+
+/** One app bar button: opens [screenId], or notifies the page with [id]. */
+data class ActionSpec(
+    val id: String,
+    val icon: String = "",
+    val label: String = "",
+    val screenId: String = "",
+) {
+    val isText: Boolean get() = icon.isEmpty() && label.isNotEmpty()
+
+    companion object {
+        fun fromJson(json: JSONObject): ActionSpec = ActionSpec(
+            id = json.optString("id"),
+            icon = json.optString("icon"),
+            label = json.optString("label"),
+            screenId = json.optString("screen").ifEmpty { json.optString("screenId") },
+        )
+    }
+}
+
+/** Native navigation drawer. */
+data class DrawerSpec(
+    val enabled: Boolean = false,
+    val headerTitle: String = "",
+    val headerSubtitle: String = "",
+    val headerImage: String = "",
+    val items: List<DrawerItemSpec> = emptyList(),
+) {
+    companion object {
+        fun fromJson(json: JSONObject): DrawerSpec = DrawerSpec(
+            enabled = json.optBoolean("enabled", false),
+            headerTitle = json.optString("headerTitle"),
+            headerSubtitle = json.optString("headerSubtitle"),
+            headerImage = json.optString("headerImage"),
+            items = json.optJSONArray("items").objects().map { DrawerItemSpec.fromJson(it) },
+        )
+    }
+}
+
+data class DrawerItemSpec(
+    val label: String,
+    val icon: String = "",
+    val screenId: String = "",
+    val actionId: String = "",
+    val isDivider: Boolean = false,
+) {
+    companion object {
+        fun fromJson(json: JSONObject): DrawerItemSpec = DrawerItemSpec(
+            label = json.optString("label"),
+            icon = json.optString("icon"),
+            screenId = json.optString("screen").ifEmpty { json.optString("screenId") },
+            actionId = json.optString("action"),
+            isDivider = json.optBoolean("divider", false),
+        )
+    }
+}
+
+data class AppTheme(
+    val accent: String = "#4F46E5",
+    val background: String = "#F6F7FB",
+    val surface: String = "#FFFFFF",
+    val text: String = "#14161C",
+    val mode: String = "system",
+    // Native chrome overrides. Empty means "derive from the palette above".
+    val appBarBackground: String = "",
+    val appBarForeground: String = "",
+    val drawerBackground: String = "",
+    val drawerText: String = "",
+    val drawerIcon: String = "",
+    val drawerHeaderBackground: String = "",
+    val drawerHeaderText: String = "",
+    val navBackground: String = "",
+    val navSelected: String = "",
+    val navUnselected: String = "",
+    val statusBarColor: String = "",
+    val navigationBarColor: String = "",
+) {
+    val resolvedAppBarBackground: String get() = appBarBackground.ifEmpty { surface }
+    val resolvedAppBarForeground: String get() = appBarForeground.ifEmpty { text }
+    val resolvedDrawerBackground: String get() = drawerBackground.ifEmpty { surface }
+    val resolvedDrawerText: String get() = drawerText.ifEmpty { text }
+    val resolvedDrawerIcon: String get() = drawerIcon.ifEmpty { resolvedDrawerText }
+    val resolvedDrawerHeaderBackground: String
+        get() = drawerHeaderBackground.ifEmpty { resolvedDrawerBackground }
+    val resolvedDrawerHeaderText: String get() = drawerHeaderText.ifEmpty { resolvedDrawerText }
+    val resolvedNavBackground: String get() = navBackground.ifEmpty { surface }
+    val resolvedNavSelected: String get() = navSelected.ifEmpty { accent }
+    val resolvedNavUnselected: String get() = navUnselected.ifEmpty { text }
+    val resolvedStatusBarColor: String get() = statusBarColor.ifEmpty { resolvedAppBarBackground }
+    val resolvedNavigationBarColor: String
+        get() = navigationBarColor.ifEmpty { resolvedNavBackground }
+
+    companion object {
+        fun fromJson(json: JSONObject): AppTheme = AppTheme(
+            accent = json.optString("accent").ifEmpty { "#4F46E5" },
+            background = json.optString("background").ifEmpty { "#F6F7FB" },
+            surface = json.optString("surface").ifEmpty { "#FFFFFF" },
+            text = json.optString("text").ifEmpty { "#14161C" },
+            mode = json.optString("mode").ifEmpty { "system" },
+            appBarBackground = json.optString("appBarBackground"),
+            appBarForeground = json.optString("appBarForeground"),
+            drawerBackground = json.optString("drawerBackground"),
+            drawerText = json.optString("drawerText"),
+            drawerIcon = json.optString("drawerIcon"),
+            drawerHeaderBackground = json.optString("drawerHeaderBackground"),
+            drawerHeaderText = json.optString("drawerHeaderText"),
+            navBackground = json.optString("navBackground"),
+            navSelected = json.optString("navSelected"),
+            navUnselected = json.optString("navUnselected"),
+            statusBarColor = json.optString("statusBarColor"),
+            navigationBarColor = json.optString("navigationBarColor"),
+        )
+    }
+}
+
+/** A bad hex value must degrade to something readable, not transparent black. */
+fun parseHexColor(hex: String, fallback: Color = Color(0xFF4F46E5)): Color {
+    var value = hex.trim().removePrefix("#")
+    if (value.length == 6) value = "FF$value"
+    return try {
+        Color(value.toLong(16).toInt())
+    } catch (_: Exception) {
+        fallback
+    }
+}
+
+/**
+ * Explicit map: the manifest's icon names are a closed set, so an unknown name
+ * can only come from hand-editing project.json and falls back to a plain circle.
+ */
+private val ICONS: Map<String, ImageVector> = mapOf(
+    "home" to Icons.Outlined.Home,
+    "search" to Icons.Filled.Search,
+    "favorite" to Icons.Outlined.FavoriteBorder,
+    "shopping_cart" to Icons.Outlined.ShoppingCart,
+    "person" to Icons.Outlined.Person,
+    "settings" to Icons.Outlined.Settings,
+    "list" to Icons.Outlined.ListAlt,
+    "grid_view" to Icons.Outlined.GridView,
+    "chat" to Icons.Outlined.ChatBubbleOutline,
+    "notifications" to Icons.Outlined.NotificationsNone,
+    "calendar_today" to Icons.Outlined.CalendarToday,
+    "map" to Icons.Outlined.Map,
+    "camera" to Icons.Outlined.PhotoCamera,
+    "play_circle" to Icons.Outlined.PlayCircleOutline,
+    "library_books" to Icons.Outlined.LibraryBooks,
+    "star" to Icons.Outlined.StarBorder,
+    "add_circle" to Icons.Outlined.AddCircleOutline,
+    "explore" to Icons.Outlined.Explore,
+    "wallet" to Icons.Outlined.AccountBalanceWallet,
+    "history" to Icons.Filled.History,
+    "bookmark" to Icons.Outlined.BookmarkBorder,
+    "dashboard" to Icons.Outlined.Dashboard,
+    "info" to Icons.Outlined.Info,
+)
+
+fun materialIcon(name: String): ImageVector = ICONS[name] ?: Icons.Outlined.Circle
+
+/** Non-empty strings in a possibly-null array. */
+fun JSONArray?.strings(): List<String> {
+    if (this == null) return emptyList()
+    return (0 until length()).map { optString(it) }.filter { it.isNotEmpty() }
+}
+
+/** Objects in a possibly-null array, skipping anything that is not one. */
+fun JSONArray?.objects(): List<JSONObject> {
+    if (this == null) return emptyList()
+    val out = ArrayList<JSONObject>(length())
+    for (i in 0 until length()) {
+        optJSONObject(i)?.let { out.add(it) }
+    }
+    return out
+}

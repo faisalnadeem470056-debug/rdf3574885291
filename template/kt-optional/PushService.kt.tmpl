@@ -1,0 +1,122 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// Firebase Cloud Messaging. Emitted ONLY when the project declares the "push"
+// capability, because the dependency is dead weight in an app that never uses
+// it.
+//
+// SETUP, and there is no way around it: FCM identifies an app by a
+// `google-services.json` from YOUR Firebase project. Put that file in `app/`
+// before building, or the app still runs but `native.pushToken()` answers
+// { error: 'unavailable' } and no message is ever delivered. The Gradle plugin
+// is applied only when the file is present, so the project builds either way.
+// ---------------------------------------------------------------------------
+
+import android.util.Log
+import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
+import org.json.JSONObject
+
+/**
+ * Receives pushes. A message with a `notification` block is shown by the system
+ * while the app is in the background; one with only `data` arrives here in every
+ * state, which is why the payload is handed to the shell either way.
+ */
+class PushService : FirebaseMessagingService() {
+
+    override fun onNewToken(token: String) {
+        PushSupport.deliverToken(token)
+    }
+
+    override fun onMessageReceived(message: RemoteMessage) {
+        val data = JSONObject()
+        for ((key, value) in message.data) data.put(key, value)
+
+        val title = message.notification?.title ?: data.optString("title")
+        val body = message.notification?.body ?: data.optString("body")
+
+        // Shown through the same path as a local notification, so a push looks
+        // exactly like everything else the app posts -- a heads-up banner.
+        if (title.isNotEmpty() || body.isNotEmpty()) {
+            showNotification(
+                context = this,
+                id = message.messageId ?: System.currentTimeMillis().toString(),
+                title = title,
+                body = body,
+                dataJson = data.toString(),
+            )
+        }
+
+        PushSupport.deliverMessage(
+            JSONObject()
+                .put("title", title)
+                .put("body", body)
+                .put("data", data)
+                .toString(),
+        )
+    }
+}
+
+/**
+ * The bridge between the shell and Firebase.
+ *
+ * The shell reaches this by reflection (`Class.forName("...PushSupport")`), so
+ * the shared native code carries no Firebase dependency and an app without the
+ * push capability compiles unchanged.
+ */
+object PushSupport {
+
+    /** Called by MainActivity at start-up. Firebase starts itself from google-services.json. */
+    @JvmStatic
+    fun init(context: android.content.Context) = Unit
+
+    /** Set by the shell so a token or message can reach the page. */
+    @Volatile
+    var listener: ((event: String, json: String) -> Unit)? = null
+
+    /** Called by reflection. Hands the current token to [callback]. */
+    @JvmStatic
+    fun token(callback: (String?) -> Unit) {
+        try {
+            FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { callback(it) }
+                .addOnFailureListener {
+                    Log.w("GeneratedApp", "push token failed", it)
+                    callback(null)
+                }
+        } catch (e: Throwable) {
+            // No google-services.json, or Play services missing.
+            Log.w("GeneratedApp", "push unavailable", e)
+            callback(null)
+        }
+    }
+
+    @JvmStatic
+    fun subscribe(topic: String, callback: (Boolean) -> Unit) {
+        try {
+            FirebaseMessaging.getInstance().subscribeToTopic(topic)
+                .addOnCompleteListener { callback(it.isSuccessful) }
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    @JvmStatic
+    fun unsubscribe(topic: String, callback: (Boolean) -> Unit) {
+        try {
+            FirebaseMessaging.getInstance().unsubscribeFromTopic(topic)
+                .addOnCompleteListener { callback(it.isSuccessful) }
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    internal fun deliverToken(token: String) {
+        listener?.invoke("native:pushtoken", JSONObject().put("token", token).toString())
+    }
+
+    internal fun deliverMessage(json: String) {
+        listener?.invoke("native:push", json)
+    }
+}

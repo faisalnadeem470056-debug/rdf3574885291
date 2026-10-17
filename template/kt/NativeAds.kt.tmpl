@@ -1,0 +1,239 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as assets/export/kt/NativeAds.kt.tmpl
+// with only the package line swapped (tools/sync_export_templates.sh).
+//
+// AdMob, reached by reflection.
+//
+// The SDK itself is referenced only from AdsSupport, which ships in the app's
+// root package and only when the project declared the "ads" capability. This
+// file therefore carries no ads dependency at all, and an app without ads
+// answers every call with { error: 'unavailable' } instead of failing to build.
+//
+// Test ids: AdMob refuses to serve real ads to a build that is not registered,
+// and clicking a real ad on your own device is what gets an account banned. A
+// project in test mode uses Google's public test units, which always fill.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import android.view.View
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.json.JSONObject
+
+/** The `native.*` calls this controller answers. */
+private val AD_KINDS = setOf("showInterstitial", "showRewarded", "adsStatus")
+
+/**
+ * Talks to the app's AdsSupport, if it has one.
+ *
+ * Every method degrades to "no ad" rather than throwing, because an app can be
+ * built without ads, a device can be offline, and an ad request can simply go
+ * unfilled -- all of which are normal.
+ */
+class AdsBridge(private val context: Context) {
+
+    private val support: Any? by lazy {
+        try {
+            Class.forName(context.packageName + ".AdsSupport")
+                .getDeclaredField("INSTANCE")
+                .get(null)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    val isAvailable: Boolean get() = support != null
+
+    fun initialize() {
+        val target = support ?: return
+        try {
+            target.javaClass.getMethod("initialize", Context::class.java).invoke(target, context)
+        } catch (_: Throwable) {
+            // Nothing to initialise.
+        }
+    }
+
+    /**
+     * Google's public test unit for [kind] ("banner", "interstitial",
+     * "rewarded"), or empty where ads are unavailable.
+     *
+     * The ids live in the adapter rather than here so that no ad-unit string is
+     * compiled into an app that cannot show ads -- the builder included. A
+     * store reviewer scanning strings finds nothing suggesting this app serves
+     * ads, because it does not.
+     */
+    fun testUnit(kind: String): String {
+        val target = support ?: return ""
+        return try {
+            target.javaClass
+                .getMethod("testUnit", String::class.java)
+                .invoke(target, kind) as? String ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    /** The banner view to place in the layout, or null when unavailable. */
+    fun createBanner(unitId: String, widthDp: Int): View? {
+        val target = support ?: return null
+        return try {
+            target.javaClass
+                .getMethod("createBanner", Context::class.java, String::class.java, Int::class.java)
+                .invoke(target, context, unitId, widthDp) as? View
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun showInterstitial(unitId: String, callback: (Boolean) -> Unit) {
+        val target = support ?: return callback(false)
+        val activity = context.findActivity() ?: return callback(false)
+        try {
+            target.javaClass
+                .getMethod(
+                    "showInterstitial",
+                    android.app.Activity::class.java,
+                    String::class.java,
+                    Function1::class.java,
+                )
+                .invoke(target, activity, unitId, callback as Function1<Boolean, Unit>)
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    fun showRewarded(unitId: String, callback: (Boolean, Int, String) -> Unit) {
+        val target = support ?: return callback(false, 0, "")
+        val activity = context.findActivity() ?: return callback(false, 0, "")
+        try {
+            target.javaClass
+                .getMethod(
+                    "showRewarded",
+                    android.app.Activity::class.java,
+                    String::class.java,
+                    Function3::class.java,
+                )
+                .invoke(target, activity, unitId, callback as Function3<Boolean, Int, String, Unit>)
+        } catch (_: Throwable) {
+            callback(false, 0, "")
+        }
+    }
+}
+
+/**
+ * Serves the page-driven ad calls. The banner is manifest-driven and drawn by
+ * the shell, so it is not here.
+ */
+class NativeAdsController internal constructor(
+    private val bridge: AdsBridge,
+    private val units: AdUnits,
+    private val onResult: (id: Int, resultJson: String) -> Unit,
+) {
+
+    fun handles(kind: String): Boolean = kind in AD_KINDS
+
+    fun start(request: NativeUiRequest) {
+        when (request.kind) {
+            "adsStatus" -> onResult(
+                request.id,
+                JSONObject()
+                    .put("available", bridge.isAvailable && units.enabled)
+                    .put("test", units.testMode)
+                    .toString(),
+            )
+
+            "showInterstitial" -> {
+                if (!bridge.isAvailable || !units.enabled || units.interstitial.isEmpty()) {
+                    onResult(request.id, unavailable())
+                    return
+                }
+                bridge.showInterstitial(units.interstitial) { shown ->
+                    onResult(
+                        request.id,
+                        JSONObject().put("shown", shown).toString(),
+                    )
+                }
+            }
+
+            "showRewarded" -> {
+                if (!bridge.isAvailable || !units.enabled || units.rewarded.isEmpty()) {
+                    onResult(request.id, unavailable())
+                    return
+                }
+                bridge.showRewarded(units.rewarded) { earned, amount, type ->
+                    onResult(
+                        request.id,
+                        JSONObject()
+                            .put("earned", earned)
+                            .put("amount", amount)
+                            .put("type", type)
+                            .toString(),
+                    )
+                }
+            }
+
+            else -> onResult(request.id, "null")
+        }
+    }
+
+    private fun unavailable(): String = JSONObject().put("error", "unavailable").toString()
+}
+
+/** The unit ids in force, after the test-mode substitution. */
+data class AdUnits(
+    val enabled: Boolean,
+    val testMode: Boolean,
+    val banner: String,
+    val interstitial: String,
+    val rewarded: String,
+) {
+    companion object {
+        /**
+         * Test mode replaces every unit id with Google's, which is what makes a
+         * preview show ads at all: a real unit only fills for a registered app.
+         */
+        fun resolve(
+            bridge: AdsBridge,
+            enabled: Boolean,
+            testMode: Boolean,
+            banner: String,
+            interstitial: String,
+            rewarded: String,
+        ): AdUnits = if (testMode) {
+            // The ids come from the adapter, which only exists in an app that
+            // declared ads.
+            AdUnits(
+                enabled = enabled,
+                testMode = true,
+                banner = bridge.testUnit("banner"),
+                interstitial = bridge.testUnit("interstitial"),
+                rewarded = bridge.testUnit("rewarded"),
+            )
+        } else {
+            AdUnits(enabled, false, banner, interstitial, rewarded)
+        }
+    }
+}
+
+@Composable
+fun rememberNativeAds(
+    enabled: Boolean,
+    testMode: Boolean,
+    banner: String,
+    interstitial: String,
+    rewarded: String,
+    onResult: (id: Int, resultJson: String) -> Unit,
+): Triple<AdsBridge, AdUnits, NativeAdsController> {
+    val context = LocalContext.current
+    val bridge = remember(context) { AdsBridge(context).also { it.initialize() } }
+    val units = remember(bridge, enabled, testMode, banner, interstitial, rewarded) {
+        AdUnits.resolve(bridge, enabled, testMode, banner, interstitial, rewarded)
+    }
+    val controller = remember(bridge, units, onResult) {
+        NativeAdsController(bridge, units, onResult)
+    }
+    return Triple(bridge, units, controller)
+}

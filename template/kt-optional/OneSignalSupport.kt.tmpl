@@ -1,0 +1,129 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// OneSignal push. Emitted instead of the Firebase PushService when the app
+// chose OneSignal in the builder's Push panel. OneSignal needs only its App ID,
+// which is public and baked in below; sending happens from the OneSignal
+// dashboard (or its REST API with a key that never ships in the app).
+//
+// Every push arrives as a heads-up banner: the extension below moves it onto
+// the app's IMPORTANCE_HIGH channel, which OneSignal's default channel is not.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import com.onesignal.OneSignal
+import com.onesignal.notifications.INotificationClickEvent
+import com.onesignal.notifications.INotificationClickListener
+import com.onesignal.notifications.INotificationLifecycleListener
+import com.onesignal.notifications.INotificationReceivedEvent
+import com.onesignal.notifications.INotificationServiceExtension
+import com.onesignal.notifications.INotificationWillDisplayEvent
+import org.json.JSONObject
+
+private const val ONESIGNAL_APP_ID = "{{ONESIGNAL_APP_ID}}"
+
+/**
+ * Runs for every push, also while the app is closed (registered in the
+ * manifest as com.onesignal.NotificationServiceExtension).
+ */
+class PushNotificationExtension : INotificationServiceExtension {
+    override fun onNotificationReceived(event: INotificationReceivedEvent) {
+        ensureAlertChannel(event.context)
+        event.notification.setExtender(
+            NotificationCompat.Extender { builder ->
+                builder
+                    .setChannelId(CHANNEL_ID_ALERTS)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setDefaults(NotificationCompat.DEFAULT_ALL)
+            },
+        )
+    }
+}
+
+/** The bridge between the shell and OneSignal; same shape as the Firebase one. */
+object PushSupport {
+
+    @Volatile
+    var listener: ((event: String, json: String) -> Unit)? = null
+
+    @Volatile
+    private var started = false
+
+    @JvmStatic
+    fun init(context: Context) {
+        if (started) return
+        started = true
+        try {
+            OneSignal.initWithContext(context, ONESIGNAL_APP_ID)
+            OneSignal.Notifications.addForegroundLifecycleListener(object : INotificationLifecycleListener {
+                override fun onWillDisplay(event: INotificationWillDisplayEvent) {
+                    val n = event.notification
+                    deliver(
+                        "native:push",
+                        JSONObject()
+                            .put("title", n.title.orEmpty())
+                            .put("body", n.body.orEmpty())
+                            .put("data", n.additionalData ?: JSONObject())
+                            .toString(),
+                    )
+                }
+            })
+            OneSignal.Notifications.addClickListener(object : INotificationClickListener {
+                override fun onClick(event: INotificationClickEvent) {
+                    val n = event.notification
+                    NotificationBus.deliver(
+                        JSONObject()
+                            .put("id", n.notificationId)
+                            .put("data", n.additionalData ?: JSONObject())
+                            .toString(),
+                    )
+                }
+            })
+        } catch (e: Throwable) {
+            Log.w("GeneratedApp", "OneSignal failed to start", e)
+        }
+    }
+
+    /**
+     * The OneSignal subscription id: what a push is addressed to
+     * (include_subscription_ids in OneSignal's API). Null until the user has
+     * allowed notifications and OneSignal has registered the device.
+     */
+    @JvmStatic
+    fun token(callback: (String?) -> Unit) {
+        try {
+            val id = OneSignal.User.pushSubscription.id
+            callback(id.ifEmpty { null })
+        } catch (e: Throwable) {
+            Log.w("GeneratedApp", "push unavailable", e)
+            callback(null)
+        }
+    }
+
+    /** Topics are OneSignal tags: target them with a filter on the tag. */
+    @JvmStatic
+    fun subscribe(topic: String, callback: (Boolean) -> Unit) {
+        try {
+            OneSignal.User.addTag(topic, "1")
+            callback(true)
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    @JvmStatic
+    fun unsubscribe(topic: String, callback: (Boolean) -> Unit) {
+        try {
+            OneSignal.User.removeTag(topic)
+            callback(true)
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    private fun deliver(event: String, json: String) {
+        listener?.invoke(event, json)
+    }
+}

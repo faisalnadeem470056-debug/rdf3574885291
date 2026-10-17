@@ -1,0 +1,120 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// The BiometricPrompt adapter.
+//
+// DUPLICATED into an export that declares the "biometric" capability
+// (assets/export/kt-optional/BiometricSupport.kt.tmpl, package line swapped).
+// It is the only file that touches androidx.biometric, so an app without the
+// capability links against neither it nor androidx.fragment.
+//
+// The builder keeps a copy so the preview can exercise the prompt.
+// It lives in the ROOT package because the reflection lookup is built from the
+// package name.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+
+@Suppress("unused") // Reached by reflection from the shared shell.
+object BiometricSupport {
+
+    /**
+     * [callback] receives (ok, status) where status is one of success, failed,
+     * cancelled, unavailable, not_enrolled -- the page needs to tell "the user
+     * backed out" apart from "this device cannot do it".
+     */
+    @JvmStatic
+    fun authenticate(
+        context: Context,
+        title: String,
+        subtitle: String,
+        description: String,
+        callback: (Boolean, String) -> Unit,
+    ) {
+        val activity = findActivity(context) as? FragmentActivity
+        if (activity == null) {
+            callback(false, "unavailable")
+            return
+        }
+
+        val allowed = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+        when (BiometricManager.from(context).canAuthenticate(allowed)) {
+            BiometricManager.BIOMETRIC_SUCCESS -> Unit
+
+            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> {
+                // Nothing set up on the device: the page should offer its own
+                // fallback rather than telling the user to try again.
+                callback(false, "not_enrolled")
+                return
+            }
+
+            else -> {
+                callback(false, "unavailable")
+                return
+            }
+        }
+
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(title.ifEmpty { "Confirm it is you" })
+            .apply {
+                if (subtitle.isNotEmpty()) setSubtitle(subtitle)
+                if (description.isNotEmpty()) setDescription(description)
+            }
+            // Device credential is allowed, so no negative button may be set:
+            // setting both throws.
+            .setAllowedAuthenticators(allowed)
+            .build()
+
+        val prompt = BiometricPrompt(
+            activity,
+            ContextCompat.getMainExecutor(context),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    callback(true, "success")
+                }
+
+                override fun onAuthenticationError(code: Int, message: CharSequence) {
+                    val status = when (code) {
+                        BiometricPrompt.ERROR_USER_CANCELED,
+                        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+                        BiometricPrompt.ERROR_CANCELED,
+                        -> "cancelled"
+
+                        BiometricPrompt.ERROR_NO_BIOMETRICS -> "not_enrolled"
+                        BiometricPrompt.ERROR_HW_NOT_PRESENT,
+                        BiometricPrompt.ERROR_HW_UNAVAILABLE,
+                        -> "unavailable"
+
+                        else -> "failed"
+                    }
+                    callback(false, status)
+                }
+
+                // One bad fingerprint is not an answer: the prompt stays up and
+                // the user tries again, so nothing is resolved here.
+                override fun onAuthenticationFailed() = Unit
+            },
+        )
+
+        try {
+            prompt.authenticate(info)
+        } catch (_: Exception) {
+            callback(false, "unavailable")
+        }
+    }
+
+    private fun findActivity(context: Context): android.app.Activity? {
+        var current = context
+        while (current is android.content.ContextWrapper) {
+            if (current is android.app.Activity) return current
+            current = current.baseContext
+        }
+        return null
+    }
+}

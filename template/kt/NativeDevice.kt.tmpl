@@ -1,0 +1,599 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// SHARED FILE -- copied into every export as assets/export/kt/NativeDevice.kt.tmpl
+// with only the package line swapped (tools/sync_export_templates.sh).
+//
+// Tier 3: what the device itself can do -- location, connectivity, clipboard,
+// vibration, the contact picker, a calendar entry, and the dial / SMS / mail /
+// maps / WhatsApp hand-offs.
+//
+// Location is the only part with a permission, and it asks for itself. The
+// hand-offs are all Intents: they open the app that owns the job rather than
+// pretending to do it, which is also why none of them can send anything on the
+// user's behalf.
+// ---------------------------------------------------------------------------
+
+import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentUris
+import android.content.Context
+import android.content.Intent
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.provider.CalendarContract
+import android.provider.ContactsContract
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContract
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+/** The `native.*` calls this controller answers. */
+private val DEVICE_KINDS = setOf(
+    "location",
+    "watchLocation",
+    "network",
+    "watchNetwork",
+    "copy",
+    "paste",
+    "vibrate",
+    "call",
+    "sms",
+    "email",
+    "whatsapp",
+    "openMaps",
+    "pickContact",
+    "addCalendarEvent",
+)
+
+class NativeDeviceController internal constructor(
+    private val context: Context,
+    private val permissions: NativePermissionController,
+    private val rawResult: (id: Int, resultJson: String) -> Unit,
+    /** Pushes `native:location` / `native:network` into the page that asked. */
+    private val rawEmit: (event: String, detailJson: String) -> Unit,
+    private val launchContactPicker: (NativeUiRequest) -> Unit,
+) {
+
+    // ConnectivityManager delivers its callbacks on its own thread, and a
+    // WebView call from anywhere but the main thread is a hard crash rather
+    // than a warning. Everything that can reach the page is marshalled here so
+    // no individual call site has to remember.
+    private val main = Handler(Looper.getMainLooper())
+
+    private fun onResult(id: Int, resultJson: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            rawResult(id, resultJson)
+        } else {
+            main.post { rawResult(id, resultJson) }
+        }
+    }
+
+    private fun emit(event: String, detailJson: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            rawEmit(event, detailJson)
+        } else {
+            main.post { rawEmit(event, detailJson) }
+        }
+    }
+
+    private var locationListener: LocationListener? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    fun handles(kind: String): Boolean = kind in DEVICE_KINDS
+
+    fun start(request: NativeUiRequest) {
+        when (request.kind) {
+            "location" -> oneShotLocation(request)
+            "watchLocation" -> watchLocation(request)
+            "network" -> onResult(request.id, networkJson())
+            "watchNetwork" -> watchNetwork(request)
+            "copy" -> copy(request)
+            "paste" -> paste(request)
+            "vibrate" -> vibrate(request)
+            "call" -> openIntent(request, dialIntent(request.options))
+            "sms" -> openIntent(request, smsIntent(request.options))
+            "email" -> openIntent(request, emailIntent(request.options))
+            "whatsapp" -> openIntent(request, whatsAppIntent(request.options))
+            "openMaps" -> openIntent(request, mapsIntent(request.options))
+            "pickContact" -> launchContactPicker(request)
+            "addCalendarEvent" -> openIntent(request, calendarIntent(request.options))
+            else -> onResult(request.id, "null")
+        }
+    }
+
+    /** Stops anything still running when the shell goes away. */
+    fun dispose() {
+        stopLocationUpdates()
+        stopNetworkUpdates()
+    }
+
+    // ---- Location ----------------------------------------------------
+
+    private val locationManager: LocationManager?
+        get() = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+
+    @SuppressLint("MissingPermission")
+    private fun oneShotLocation(request: NativeUiRequest) {
+        permissions.ensure("location") { granted ->
+            if (!granted) {
+                onResult(request.id, errorJson("denied"))
+                return@ensure
+            }
+
+            val manager = locationManager
+            if (manager == null || !isLocationEnabled(manager)) {
+                onResult(request.id, errorJson("unavailable"))
+                return@ensure
+            }
+
+            // A last known fix answers instantly and is right often enough to
+            // be worth trying before spinning up the radio.
+            val cached = lastKnownLocation(manager)
+            if (cached != null && isFresh(cached, request.options.optLong("maxAgeMs", 60_000))) {
+                onResult(request.id, locationJson(cached))
+                return@ensure
+            }
+
+            val provider = bestProvider(manager, request.options.optBoolean("highAccuracy", false))
+            if (provider == null) {
+                onResult(request.id, cached?.let { locationJson(it) } ?: errorJson("unavailable"))
+                return@ensure
+            }
+
+            var answered = false
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    if (answered) return
+                    answered = true
+                    manager.removeUpdates(this)
+                    onResult(request.id, locationJson(location))
+                }
+
+                // Required on older platforms; the base interface only made
+                // them default from API 30.
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+                override fun onProviderEnabled(provider: String) = Unit
+                override fun onProviderDisabled(provider: String) {
+                    if (answered) return
+                    answered = true
+                    manager.removeUpdates(this)
+                    onResult(request.id, errorJson("unavailable"))
+                }
+            }
+
+            try {
+                manager.requestLocationUpdates(provider, 0L, 0f, listener)
+            } catch (_: Exception) {
+                onResult(request.id, errorJson("unavailable"))
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun watchLocation(request: NativeUiRequest) {
+        if (!request.options.optBoolean("on", true)) {
+            stopLocationUpdates()
+            onResult(request.id, "true")
+            return
+        }
+
+        permissions.ensure("location") { granted ->
+            if (!granted) {
+                onResult(request.id, errorJson("denied"))
+                return@ensure
+            }
+
+            val manager = locationManager
+            val provider = manager?.let {
+                bestProvider(it, request.options.optBoolean("highAccuracy", false))
+            }
+            if (manager == null || provider == null) {
+                onResult(request.id, errorJson("unavailable"))
+                return@ensure
+            }
+
+            stopLocationUpdates()
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    emit("native:location", locationJson(location))
+                }
+
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+                override fun onProviderEnabled(provider: String) = Unit
+                override fun onProviderDisabled(provider: String) = Unit
+            }
+            locationListener = listener
+
+            try {
+                manager.requestLocationUpdates(
+                    provider,
+                    request.options.optLong("minMs", 5_000),
+                    request.options.optDouble("minMeters", 10.0).toFloat(),
+                    listener,
+                )
+                onResult(request.id, "true")
+            } catch (_: Exception) {
+                onResult(request.id, errorJson("unavailable"))
+            }
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        val listener = locationListener ?: return
+        locationListener = null
+        try {
+            locationManager?.removeUpdates(listener)
+        } catch (_: Exception) {
+            // Already gone.
+        }
+    }
+
+    private fun isLocationEnabled(manager: LocationManager): Boolean = try {
+        manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun bestProvider(manager: LocationManager, highAccuracy: Boolean): String? {
+        val order = if (highAccuracy) {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        } else {
+            listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+        }
+        return order.firstOrNull {
+            try {
+                manager.isProviderEnabled(it)
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun lastKnownLocation(manager: LocationManager): Location? = try {
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .mapNotNull { manager.getLastKnownLocation(it) }
+            .maxByOrNull { it.time }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun isFresh(location: Location, maxAgeMs: Long): Boolean =
+        maxAgeMs > 0 && System.currentTimeMillis() - location.time <= maxAgeMs
+
+    private fun locationJson(location: Location): String = JSONObject().apply {
+        put("lat", location.latitude)
+        put("lng", location.longitude)
+        put("accuracy", location.accuracy.toDouble())
+        put("at", location.time)
+    }.toString()
+
+    // ---- Connectivity ------------------------------------------------
+
+    private val connectivityManager: ConnectivityManager?
+        get() = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+    private fun networkJson(): String {
+        val manager = connectivityManager
+        val capabilities = try {
+            manager?.getNetworkCapabilities(manager.activeNetwork)
+        } catch (_: Exception) {
+            null
+        }
+
+        val type = when {
+            capabilities == null -> "none"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+        val online = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+
+        return JSONObject().put("online", online).put("type", type).toString()
+    }
+
+    private fun watchNetwork(request: NativeUiRequest) {
+        if (!request.options.optBoolean("on", true)) {
+            stopNetworkUpdates()
+            onResult(request.id, "true")
+            return
+        }
+
+        stopNetworkUpdates()
+        val manager = connectivityManager
+        if (manager == null) {
+            onResult(request.id, errorJson("unavailable"))
+            return
+        }
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                emit("native:network", networkJson())
+            }
+
+            override fun onLost(network: android.net.Network) {
+                emit("native:network", networkJson())
+            }
+        }
+        networkCallback = callback
+
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            onResult(request.id, "true")
+        } catch (_: Exception) {
+            networkCallback = null
+            onResult(request.id, errorJson("unavailable"))
+        }
+    }
+
+    private fun stopNetworkUpdates() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        try {
+            connectivityManager?.unregisterNetworkCallback(callback)
+        } catch (_: Exception) {
+            // Never registered.
+        }
+    }
+
+    // ---- Clipboard and vibration -------------------------------------
+
+    private val clipboard: ClipboardManager?
+        get() = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+
+    private fun copy(request: NativeUiRequest) {
+        val text = request.options.optString("text")
+        try {
+            clipboard?.setPrimaryClip(ClipData.newPlainText("text", text))
+            onResult(request.id, "true")
+        } catch (_: Exception) {
+            onResult(request.id, "false")
+        }
+    }
+
+    private fun paste(request: NativeUiRequest) {
+        val text = try {
+            clipboard?.primaryClip?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)?.coerceToText(context)?.toString()
+        } catch (_: Exception) {
+            null
+        }
+        onResult(request.id, if (text == null) "null" else JSONObject.quote(text))
+    }
+
+    private fun vibrate(request: NativeUiRequest) {
+        val pattern = request.options.optJSONArray("pattern") ?: JSONArray(listOf(0, 60))
+        val timings = LongArray(pattern.length()) { pattern.optLong(it, 0L) }
+
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)
+                ?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+
+        if (vibrator == null || !vibrator.hasVibrator()) {
+            onResult(request.id, "false")
+            return
+        }
+
+        try {
+            vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+            onResult(request.id, "true")
+        } catch (_: Exception) {
+            onResult(request.id, "false")
+        }
+    }
+
+    // ---- Hand-offs ---------------------------------------------------
+
+    private fun dialIntent(options: JSONObject): Intent =
+        // ACTION_DIAL, never ACTION_CALL: the app opens the dialler, the user
+        // decides whether the call happens.
+        Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + options.optString("number")))
+
+    private fun smsIntent(options: JSONObject): Intent {
+        val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + options.optString("to")))
+        val body = options.optString("body")
+        if (body.isNotEmpty()) intent.putExtra("sms_body", body)
+        return intent
+    }
+
+    private fun emailIntent(options: JSONObject): Intent {
+        val recipients = when (val to = options.opt("to")) {
+            is JSONArray -> Array(to.length()) { to.optString(it) }
+            null -> emptyArray()
+            else -> arrayOf(to.toString())
+        }
+
+        return Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")).apply {
+            if (recipients.isNotEmpty()) putExtra(Intent.EXTRA_EMAIL, recipients)
+            options.optString("subject").takeIf { it.isNotEmpty() }
+                ?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+            options.optString("body").takeIf { it.isNotEmpty() }
+                ?.let { putExtra(Intent.EXTRA_TEXT, it) }
+        }
+    }
+
+    private fun whatsAppIntent(options: JSONObject): Intent {
+        val phone = options.optString("phone").filter { it.isDigit() }
+        val text = Uri.encode(options.optString("text"))
+        return Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=$text"))
+    }
+
+    private fun mapsIntent(options: JSONObject): Intent {
+        val query = options.optString("query")
+        val uri = if (query.isNotEmpty()) {
+            Uri.parse("geo:0,0?q=" + Uri.encode(query))
+        } else {
+            val lat = options.optDouble("lat", 0.0)
+            val lng = options.optDouble("lng", 0.0)
+            val label = Uri.encode(options.optString("label"))
+            Uri.parse("geo:$lat,$lng?q=$lat,$lng($label)")
+        }
+        return Intent(Intent.ACTION_VIEW, uri)
+    }
+
+    private fun calendarIntent(options: JSONObject): Intent =
+        Intent(Intent.ACTION_INSERT).apply {
+            data = CalendarContract.Events.CONTENT_URI
+            putExtra(CalendarContract.Events.TITLE, options.optString("title"))
+            options.optString("location").takeIf { it.isNotEmpty() }
+                ?.let { putExtra(CalendarContract.Events.EVENT_LOCATION, it) }
+            options.optString("notes").takeIf { it.isNotEmpty() }
+                ?.let { putExtra(CalendarContract.Events.DESCRIPTION, it) }
+
+            parseDateTime(options.optString("start"))?.let {
+                putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, it)
+            }
+            parseDateTime(options.optString("end"))?.let {
+                putExtra(CalendarContract.EXTRA_EVENT_END_TIME, it)
+            }
+            if (options.optBoolean("allDay", false)) {
+                putExtra(CalendarContract.EXTRA_EVENT_ALL_DAY, true)
+            }
+        }
+
+    private fun openIntent(request: NativeUiRequest, intent: Intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        onResult(
+            request.id,
+            try {
+                context.startActivity(intent)
+                "true"
+            } catch (_: Exception) {
+                // Nothing installed handles it -- a real answer, not a crash.
+                "false"
+            },
+        )
+    }
+
+    private fun errorJson(reason: String): String =
+        JSONObject().put("error", reason).toString()
+}
+
+@Composable
+fun rememberNativeDevice(
+    permissions: NativePermissionController,
+    emit: (event: String, detailJson: String) -> Unit,
+    onResult: (id: Int, resultJson: String) -> Unit,
+): NativeDeviceController {
+    val context = LocalContext.current
+    val pendingContact = remember { arrayOfNulls<NativeUiRequest>(1) }
+
+    // Picks a phone row rather than a contact. ActivityResultContracts
+    // .PickContact() returns a *contact* uri, and getting a number from that
+    // means querying the whole Phone table, which needs READ_CONTACTS and
+    // fails with a SecurityException. Picking the row itself means the uri
+    // grant already covers the number, so this needs no permission at all.
+    val pickContact = rememberLauncherForActivityResult(PickPhoneContract) { uri ->
+        val request = pendingContact[0]
+        pendingContact[0] = null
+        if (request != null) {
+            onResult(request.id, if (uri == null) "null" else contactJson(context, uri))
+        }
+    }
+
+    val controller = remember(permissions, emit, onResult) {
+        NativeDeviceController(
+            context = context,
+            permissions = permissions,
+            rawResult = onResult,
+            rawEmit = emit,
+            launchContactPicker = { request ->
+                pendingContact[0] = request
+                pickContact.launch(Unit)
+            },
+        )
+    }
+
+    // A location or network watch outlives the page that started it unless it
+    // is torn down here.
+    DisposableEffect(controller) {
+        onDispose { controller.dispose() }
+    }
+
+    return controller
+}
+
+/** Opens the contact list in "pick a number" mode. */
+private object PickPhoneContract : ActivityResultContract<Unit, Uri?>() {
+    override fun createIntent(context: Context, input: Unit): Intent =
+        Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? =
+        if (resultCode == android.app.Activity.RESULT_OK) intent?.data else null
+}
+
+/**
+ * Name and number off the picked row.
+ *
+ * Each column is read on its own: a contact with no name, or a provider that
+ * withholds one column, should still yield the rest rather than collapsing the
+ * whole answer to null the way an all-or-nothing read did.
+ */
+private fun contactJson(context: Context, uri: Uri): String {
+    val projection = arrayOf(
+        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+        ContactsContract.CommonDataKinds.Phone.NUMBER,
+    )
+
+    return try {
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use "null"
+
+            val name = cursor.columnOrEmpty(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val phone = cursor.columnOrEmpty(ContactsContract.CommonDataKinds.Phone.NUMBER)
+
+            JSONObject().put("name", name).put("phone", phone).toString()
+        } ?: "null"
+    } catch (e: Exception) {
+        // Worth surfacing rather than looking like a cancel: the page can tell
+        // the user something went wrong instead of silently doing nothing.
+        JSONObject().put("error", e.javaClass.simpleName).toString()
+    }
+}
+
+private fun android.database.Cursor.columnOrEmpty(column: String): String = try {
+    val index = getColumnIndex(column)
+    if (index < 0 || isNull(index)) "" else getString(index).orEmpty()
+} catch (_: Exception) {
+    ""
+}
+
+/** 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:mm' in local time, as epoch millis. */
+private fun parseDateTime(value: String): Long? {
+    if (value.isBlank()) return null
+    val pattern = if (value.contains('T')) "yyyy-MM-dd'T'HH:mm" else "yyyy-MM-dd"
+    return try {
+        SimpleDateFormat(pattern, Locale.US).parse(value)?.time
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/** Kept for callers that need a calendar event id; the Intent path does not. */
+internal fun calendarEventUri(id: Long): Uri =
+    ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id)

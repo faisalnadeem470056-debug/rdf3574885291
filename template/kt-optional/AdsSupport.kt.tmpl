@@ -1,0 +1,178 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// The AdMob adapter, emitted ONLY when the project declares the "ads"
+// capability. It is the only file that touches the AdMob SDK -- the shared
+// shell reaches it by reflection (`Class.forName(packageName + ".AdsSupport")`)
+// -- so an app without ads carries neither the dependency, nor this code, nor
+// so much as an ad-unit string.
+//
+// It lives in the app's ROOT package because the reflection lookup is built
+// from the package name.
+// ---------------------------------------------------------------------------
+
+import android.app.Activity
+import android.content.Context
+import android.view.View
+import com.google.android.gms.ads.AdListener
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.FullScreenContentCallback
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import com.google.android.gms.ads.rewarded.RewardedAd
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
+
+@Suppress("unused") // Reached by reflection from the shared shell.
+object AdsSupport {
+
+    /**
+     * Google's public test units. They always fill and never bill anyone.
+     *
+     * They live here rather than in shared code so that no ad-unit string is
+     * compiled into an app that cannot show ads.
+     */
+    private val testUnits = mapOf(
+        "banner" to "ca-app-pub-3940256099942544/6300978111",
+        "interstitial" to "ca-app-pub-3940256099942544/1033173712",
+        "rewarded" to "ca-app-pub-3940256099942544/5224354917",
+    )
+
+    @JvmStatic
+    fun testUnit(kind: String): String = testUnits[kind].orEmpty()
+
+    @Volatile
+    private var started = false
+
+    /**
+     * Safe to call repeatedly; the SDK itself initialises once. Initialisation
+     * touches the network, so it runs on the SDK's own worker rather than
+     * blocking whoever asked for the first ad.
+     */
+    @JvmStatic
+    fun initialize(context: Context) {
+        if (started) return
+        started = true
+        try {
+            MobileAds.initialize(context.applicationContext) {}
+        } catch (_: Throwable) {
+            started = false
+        }
+    }
+
+    /**
+     * A banner view for the shell to place in its layout, or null when ads are
+     * unavailable. The caller adds it; the size adapts to the given width.
+     */
+    @JvmStatic
+    fun createBanner(context: Context, unitId: String, widthDp: Int): View? = try {
+        initialize(context)
+        AdView(context).apply {
+            adUnitId = unitId
+            setAdSize(
+                // The anchored adaptive size is what AdMob recommends: it picks
+                // a height suited to the device rather than the fixed 320x50
+                // that looks wrong on a tall phone.
+                AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(
+                    context,
+                    if (widthDp > 0) widthDp else 360,
+                ),
+            )
+            adListener = object : AdListener() {
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    // A banner that never fills should take no space rather
+                    // than leaving a grey band across the screen.
+                    visibility = View.GONE
+                }
+
+                override fun onAdLoaded() {
+                    visibility = View.VISIBLE
+                }
+            }
+            loadAd(AdRequest.Builder().build())
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    /**
+     * Loads and shows an interstitial. [callback] gets true only when one was
+     * actually shown, so page code can carry on either way.
+     */
+    @JvmStatic
+    fun showInterstitial(activity: Activity, unitId: String, callback: (Boolean) -> Unit) {
+        try {
+            initialize(activity)
+            InterstitialAd.load(
+                activity,
+                unitId,
+                AdRequest.Builder().build(),
+                object : InterstitialAdLoadCallback() {
+                    override fun onAdLoaded(ad: InterstitialAd) {
+                        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                            override fun onAdDismissedFullScreenContent() = callback(true)
+                            override fun onAdFailedToShowFullScreenContent(
+                                error: com.google.android.gms.ads.AdError,
+                            ) = callback(false)
+                        }
+                        ad.show(activity)
+                    }
+
+                    override fun onAdFailedToLoad(error: LoadAdError) = callback(false)
+                },
+            )
+        } catch (_: Throwable) {
+            callback(false)
+        }
+    }
+
+    /**
+     * Loads and shows a rewarded ad. [callback] receives whether the reward was
+     * earned, plus its amount and type -- a user can dismiss one early, and that
+     * must not pay out.
+     */
+    @JvmStatic
+    fun showRewarded(
+        activity: Activity,
+        unitId: String,
+        callback: (Boolean, Int, String) -> Unit,
+    ) {
+        try {
+            initialize(activity)
+            RewardedAd.load(
+                activity,
+                unitId,
+                AdRequest.Builder().build(),
+                object : RewardedAdLoadCallback() {
+                    override fun onAdLoaded(ad: RewardedAd) {
+                        var earned = false
+                        var amount = 0
+                        var type = ""
+
+                        ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                            override fun onAdDismissedFullScreenContent() =
+                                callback(earned, amount, type)
+
+                            override fun onAdFailedToShowFullScreenContent(
+                                error: com.google.android.gms.ads.AdError,
+                            ) = callback(false, 0, "")
+                        }
+
+                        ad.show(activity) { reward ->
+                            earned = true
+                            amount = reward.amount
+                            type = reward.type
+                        }
+                    }
+
+                    override fun onAdFailedToLoad(error: LoadAdError) = callback(false, 0, "")
+                },
+            )
+        } catch (_: Throwable) {
+            callback(false, 0, "")
+        }
+    }
+}

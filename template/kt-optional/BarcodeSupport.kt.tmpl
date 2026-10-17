@@ -1,0 +1,63 @@
+package {{PACKAGE}}
+
+// ---------------------------------------------------------------------------
+// The barcode scanner adapter.
+//
+// DUPLICATED into an export that declares the "barcode" capability. The only
+// file touching Google's code scanner, which runs the camera inside Play
+// services -- so an app using this needs no CAMERA permission and no preview
+// surface of its own.
+// ---------------------------------------------------------------------------
+
+import android.content.Context
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+
+@Suppress("unused") // Reached by reflection from the shared shell.
+object BarcodeSupport {
+
+    /**
+     * [callback] receives (value, format, error). A cancel gives all-null with
+     * no error; a device without Play services gives error = "unavailable".
+     */
+    @JvmStatic
+    fun scan(context: Context, autoZoom: Boolean, callback: (String?, String?, String?) -> Unit) {
+        try {
+            val options = GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
+                .apply { if (autoZoom) enableAutoZoom() }
+                .build()
+
+            GmsBarcodeScanning.getClient(context, options)
+                .startScan()
+                .addOnSuccessListener { barcode ->
+                    val value = barcode.rawValue
+                    if (value == null) {
+                        callback(null, null, null)
+                    } else {
+                        callback(value, formatName(barcode.format), null)
+                    }
+                }
+                .addOnCanceledListener { callback(null, null, null) }
+                .addOnFailureListener { callback(null, null, "unavailable") }
+        } catch (_: Throwable) {
+            callback(null, null, "unavailable")
+        }
+    }
+
+    private fun formatName(format: Int): String = when (format) {
+        Barcode.FORMAT_QR_CODE -> "qr"
+        Barcode.FORMAT_EAN_13 -> "ean13"
+        Barcode.FORMAT_EAN_8 -> "ean8"
+        Barcode.FORMAT_UPC_A -> "upca"
+        Barcode.FORMAT_UPC_E -> "upce"
+        Barcode.FORMAT_CODE_128 -> "code128"
+        Barcode.FORMAT_CODE_39 -> "code39"
+        Barcode.FORMAT_ITF -> "itf"
+        Barcode.FORMAT_PDF417 -> "pdf417"
+        Barcode.FORMAT_DATA_MATRIX -> "datamatrix"
+        Barcode.FORMAT_AZTEC -> "aztec"
+        else -> "other"
+    }
+}

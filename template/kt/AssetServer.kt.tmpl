@@ -1,0 +1,212 @@
+package {{PACKAGE}}
+
+import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.URLDecoder
+
+/**
+ * Serves `assets/www/` over loopback HTTP.
+ *
+ * Why not load the HTML straight from `file://`? Two reasons, both fatal: a
+ * file:// origin cannot load ES modules (CORS blocks them), and its
+ * localStorage is unreliable. An http origin behaves like a browser.
+ */
+class AssetServer(
+    context: Context,
+    /**
+     * Injected into every HTML response so pages read saved data
+     * synchronously, before any screen script runs.
+     */
+    private val storage: AppStorage,
+    private val assetRoot: String = "www",
+) {
+
+    private val assets = context.applicationContext.assets
+    private var socket: ServerSocket? = null
+    private var scope: CoroutineScope? = null
+
+    val baseUrl: String?
+        get() = socket?.let { "http://127.0.0.1:${it.localPort}" }
+
+    suspend fun start(): String = withContext(Dispatchers.IO) {
+        baseUrl?.let { return@withContext it }
+
+        val loopback = InetAddress.getByName("127.0.0.1")
+        val server = try {
+            ServerSocket(PREFERRED_PORT, 50, loopback)
+        } catch (_: Exception) {
+            // Port taken. App data lives in a file, not in origin-scoped browser
+            // storage, so an ephemeral fallback loses nothing.
+            ServerSocket(0, 50, loopback)
+        }
+
+        socket = server
+        val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        scope = serverScope
+
+        serverScope.launch {
+            while (!server.isClosed) {
+                val client = try {
+                    server.accept()
+                } catch (_: Exception) {
+                    break
+                }
+                launch { handle(client) }
+            }
+        }
+
+        baseUrl!!
+    }
+
+    fun stop() {
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+            // Already closed.
+        }
+        socket = null
+        scope = null
+    }
+
+    fun urlFor(path: String): String = "$baseUrl/$path"
+
+    private fun handle(client: Socket) {
+        client.use { connection ->
+            try {
+                connection.soTimeout = 15_000
+                val input = connection.getInputStream()
+                val requestLine = readLine(input) ?: return
+
+                // Drain the headers; nothing here needs them, but the client
+                // will not read the response until its request has been read.
+                while (true) {
+                    val line = readLine(input) ?: break
+                    if (line.isEmpty()) break
+                }
+
+                val output = BufferedOutputStream(connection.getOutputStream())
+                respond(requestLine.split(' ').getOrNull(1) ?: "/", output)
+                output.flush()
+            } catch (_: Exception) {
+                // A broken pipe or a malformed request must not take down the
+                // server; the next request gets a fresh socket.
+            }
+        }
+    }
+
+    private fun respond(target: String, output: BufferedOutputStream) {
+        val path = URLDecoder.decode(target.substringBefore('?'), "UTF-8").trimStart('/')
+        val relative = if (path.isEmpty()) "index.html" else path
+
+        // Path traversal is rejected outright rather than normalised: nothing
+        // legitimate ever asks for it.
+        if (relative.split('/').any { it == ".." }) {
+            writeStatus(output, 403, "text/plain; charset=utf-8", "Forbidden".toByteArray())
+            return
+        }
+
+        val ext = relative.substringAfterLast('.', "").lowercase()
+        val contentType = MIME_TYPES[ext] ?: "application/octet-stream"
+
+        val body = try {
+            val bytes = assets.open("$assetRoot/$relative").use { it.readBytes() }
+            if (ext == "html") {
+                // Saved data is injected into the document, so pages can read it
+                // synchronously before any screen script runs.
+                injectStore(bytes.toString(Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+            } else {
+                bytes
+            }
+        } catch (_: Exception) {
+            writeStatus(
+                output,
+                404,
+                "text/html; charset=utf-8",
+                "<h1>404</h1><p>$relative is not bundled.</p>".toByteArray(),
+            )
+            return
+        }
+
+        writeStatus(output, 200, contentType, body)
+    }
+
+    /** Places the saved data ahead of every other script in the document. */
+    private fun injectStore(html: String): String {
+        val json = runBlocking { storage.asJsonObject() }
+        val tag = "<script>window.__STORE__ = $json;</script>"
+
+        val headEnd = html.indexOf("</head>")
+        if (headEnd != -1) {
+            return html.substring(0, headEnd) + tag + "\n" + html.substring(headEnd)
+        }
+        return "$tag\n$html"
+    }
+
+    private fun writeStatus(
+        output: BufferedOutputStream,
+        status: Int,
+        contentType: String,
+        body: ByteArray,
+    ) {
+        val reason = when (status) {
+            200 -> "OK"
+            403 -> "Forbidden"
+            404 -> "Not Found"
+            else -> "OK"
+        }
+
+        val headers = buildString {
+            append("HTTP/1.1 $status $reason\r\n")
+            append("Content-Type: $contentType\r\n")
+            append("Content-Length: ${body.size}\r\n")
+            append("Cache-Control: no-store\r\n")
+            append("Connection: close\r\n\r\n")
+        }
+
+        output.write(headers.toByteArray(Charsets.US_ASCII))
+        output.write(body)
+    }
+
+    /** Reads one CRLF-terminated line without buffering past it. */
+    private fun readLine(input: InputStream): String? {
+        val buffer = StringBuilder()
+        while (true) {
+            val byte = input.read()
+            if (byte == -1) return if (buffer.isEmpty()) null else buffer.toString()
+            if (byte == '\n'.code) return buffer.toString().removeSuffix("\r")
+            buffer.append(byte.toChar())
+            if (buffer.length > 8192) return buffer.toString()
+        }
+    }
+
+    companion object {
+        /** Preferred port only; an ephemeral fallback changes nothing. */
+        const val PREFERRED_PORT = 45231
+
+        private val MIME_TYPES = mapOf(
+            "html" to "text/html; charset=utf-8",
+            "js" to "application/javascript; charset=utf-8",
+            "mjs" to "application/javascript; charset=utf-8",
+            "css" to "text/css; charset=utf-8",
+            "json" to "application/json; charset=utf-8",
+            "svg" to "image/svg+xml",
+            "png" to "image/png",
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "webp" to "image/webp",
+            "gif" to "image/gif",
+            "woff2" to "font/woff2",
+            "ttf" to "font/ttf",
+        )
+    }
+}
