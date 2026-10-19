@@ -1,0 +1,9 @@
+{
+  "target": "apk",
+  "name": "Laptop Luxe",
+  "packageName": "com.app.laptopluxe",
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "fileName": "laptop-luxe-1.0.0.apk",
+  "buildId": "A2_app_1790570056741_apk"
+}

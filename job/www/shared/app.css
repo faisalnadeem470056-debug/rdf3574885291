@@ -1,0 +1,229 @@
+/* ---------------------------------------------------------------------
+   FRAMEWORK FILE -- do not edit by hand. Regenerated from project.json
+   whenever the theme changes.
+
+   These variables mirror the native theme exactly, so the WebView body and
+   the native app bar / tab bar cannot drift apart.
+   --------------------------------------------------------------------- */
+:root {
+  --accent: #8B5CF6;
+  --bg: #0B0D12;
+  --surface: #151923;
+  --text: #F7F7FB;
+  --text-muted: color-mix(in srgb, var(--text) 55%, var(--bg));
+  --border: color-mix(in srgb, var(--text) 12%, var(--bg));
+  --radius: 16px;
+  --radius-sm: 10px;
+  --gap: 16px;
+  /* Page insets. The body owns them, so every screen lines up with the
+     AppBar title and screens never add padding of their own. */
+  --page-x: 16px;
+  --page-top: 12px;
+  --page-bottom: 32px;
+  --section-gap: 24px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Edge-to-edge rows must never make the whole page scroll sideways. */
+html { overflow-x: clip; }
+
+/* No scrollbars anywhere, like a native screen: the page itself (the
+   WebView's bar is off too) and any scrolling list or sheet inside it. */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* Kill the browser tells. Without these a tap flashes a blue rectangle and a
+   long press starts selecting text -- both instantly read as "web page". */
+* {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+body {
+  margin: 0;
+  padding: var(--page-top) var(--page-x) calc(var(--page-bottom) + env(safe-area-inset-bottom));
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  /* Native apps do not let you select arbitrary labels. */
+  -webkit-user-select: none;
+  user-select: none;
+  /* No rubber-band / overscroll glow at the edges. */
+  overscroll-behavior: none;
+  /* The native shell draws the AppBar and tab bar, so the page never
+     renders chrome of its own. */
+}
+
+/* Text input is the one place selection must still work. */
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Focus rings are a desktop affordance; keyboard users still get one. */
+button:focus, a:focus { outline: none; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+img { display: block; max-width: 100%; }
+
+h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.25; margin: 0 0 8px; }
+h1 { font-size: 24px; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+p  { line-height: 1.6; color: var(--text-muted); margin: 0 0 12px; }
+
+.muted { color: var(--text-muted); }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.row   { display: flex; align-items: center; gap: 12px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+}
+/* Cards do not move on press: scaling a whole panel reads as a web trick,
+   not a native tap. Only controls respond. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.btn--ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+/* Only buttons scale on press. */
+.btn { transition: transform .09s ease, filter .09s ease; }
+.btn:active { transform: scale(0.97); filter: brightness(0.94); }
+
+/* ---------------------------------------------------------------------
+   Ripple, like a native Material button.
+   The bridge inserts a .ripple span at the touch point; these rules do the
+   animation. Requires the host to clip and to be a positioning context.
+   --------------------------------------------------------------------- */
+.btn, [data-ripple] {
+  position: relative;
+  overflow: hidden;
+  /* Stops the ripple bleeding past rounded corners on some WebViews. */
+  isolation: isolate;
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  /* currentColor keeps it readable on any background: white on a filled
+     button, accent-coloured on a ghost one. */
+  background: currentColor;
+  opacity: 0.3;
+  transform: scale(0);
+  animation: ripple-expand .5s cubic-bezier(.2, .6, .3, 1) forwards;
+}
+
+@keyframes ripple-expand {
+  to { transform: scale(1); opacity: 0; }
+}
+
+/* ---------------------------------------------------------------------
+   Horizontal scrolling rows (chips, carousels, story rings). The row runs
+   edge to edge, so scrolled items slide off the screen edge instead of
+   being clipped at the page inset; the first and last item still line up
+   with the page content.
+   --------------------------------------------------------------------- */
+.hscroll {
+  display: flex;
+  gap: 10px;
+  /* bridge.js refits these to the real screen edges, even inside a screen
+     that pads its own wrapper; these values cover the first paint. */
+  margin-inline: calc(-1 * var(--page-x)) !important;
+  padding-inline: var(--page-x) !important;
+  scroll-padding-inline: var(--page-x);
+  overflow-x: auto !important;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+.hscroll::-webkit-scrollbar { display: none; }
+.hscroll > * { flex: none; }
+/* Optional: cards stop on a boundary, like a native carousel. */
+.hscroll.snap { scroll-snap-type: x mandatory; }
+.hscroll.snap > * { scroll-snap-align: start; }
+
+/* Full-width content (a hero image, a map, a divider) that ignores the
+   page inset while everything else keeps it. bridge.js refits it to the
+   real screen edges, even inside a padded wrapper. Add .bleed-top when it
+   is the first thing on the screen, so it also touches the AppBar. */
+.bleed {
+  margin-inline: calc(-1 * var(--page-x)) !important;
+  width: calc(100% + 2 * var(--page-x)) !important;
+  max-width: none !important;
+  border-radius: 0;
+}
+.bleed-top { margin-top: calc(-1 * var(--page-top)) !important; }
+
+/* Vertical rhythm between the blocks of a screen. */
+.section + .section { margin-top: var(--section-gap); }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+
+.list { display: flex; flex-direction: column; gap: 10px; }
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-nav] { cursor: pointer; }
+
+/* ---------------------------------------------------------------------
+   Edit mode, toggled by the builder's pencil button. Not active during
+   normal use.
+   --------------------------------------------------------------------- */
+body.edit-mode, body.edit-mode * { cursor: crosshair !important; }
+
+body.edit-mode *:active {
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+
+/* The last tapped element stays outlined, so it is obvious what was attached
+   to the change request. */
+.edit-hit {
+  /* Outline only, no background fill: filling it read as "the card changed
+     colour" rather than "this element is selected". */
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+  .ripple { display: none; }
+}

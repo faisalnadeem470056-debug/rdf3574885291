@@ -1,0 +1,153 @@
+{
+  "id": "app_1790570056741",
+  "name": "Laptop Luxe",
+  "description": "A modern premium shopping app for browsing, saving, and ordering laptops.",
+  "theme": {
+    "accent": "#8B5CF6",
+    "background": "#0B0D12",
+    "surface": "#151923",
+    "text": "#F7F7FB",
+    "mode": "dark",
+    "appBarBackground": "#0B0D12",
+    "appBarForeground": "#F7F7FB",
+    "drawerBackground": "#151923",
+    "drawerText": "#F7F7FB",
+    "drawerIcon": "#A78BFA",
+    "drawerHeaderBackground": "#211B3A",
+    "drawerHeaderText": "#FFFFFF",
+    "navBackground": "#11141C",
+    "navSelected": "#A78BFA",
+    "navUnselected": "#858A9A",
+    "statusBarColor": "#0B0D12",
+    "navigationBarColor": "#11141C"
+  },
+  "tabs": [
+    {
+      "label": "Shop",
+      "icon": "grid_view",
+      "screen": "shop"
+    },
+    {
+      "label": "Favorites",
+      "icon": "favorite",
+      "screen": "favorites"
+    },
+    {
+      "label": "Cart",
+      "icon": "shopping_cart",
+      "screen": "cart"
+    },
+    {
+      "label": "Orders",
+      "icon": "history",
+      "screen": "orders"
+    }
+  ],
+  "screens": [
+    {
+      "id": "shop",
+      "title": "Laptop Luxe",
+      "purpose": "Browse and filter the laptop catalog.",
+      "showAppBar": true,
+      "scrollable": true,
+      "html": "screens/shop.html",
+      "js": "screens/shop.js"
+    },
+    {
+      "id": "favorites",
+      "title": "Favorites",
+      "purpose": "View saved favorite laptops.",
+      "showAppBar": true,
+      "scrollable": true,
+      "html": "screens/favorites.html",
+      "js": "screens/favorites.js"
+    },
+    {
+      "id": "cart",
+      "title": "Cart",
+      "purpose": "Review items before checkout.",
+      "showAppBar": true,
+      "scrollable": true,
+      "html": "screens/cart.html",
+      "js": "screens/cart.js"
+    },
+    {
+      "id": "orders",
+      "title": "Orders",
+      "purpose": "View placed orders and order status.",
+      "showAppBar": true,
+      "scrollable": true,
+      "html": "screens/orders.html",
+      "js": "screens/orders.js"
+    },
+    {
+      "id": "product_detail",
+      "title": "Product details",
+      "purpose": "View laptop specifications and add to cart or favorites.",
+      "showAppBar": true,
+      "scrollable": true,
+      "orientation": "portrait",
+      "html": "screens/product_detail.html",
+      "js": "screens/product_detail.js"
+    },
+    {
+      "id": "checkout",
+      "title": "Checkout",
+      "purpose": "Enter delivery details and place an order.",
+      "showAppBar": true,
+      "scrollable": true,
+      "html": "screens/checkout.html",
+      "js": "screens/checkout.js"
+    }
+  ],
+  "appBar": {
+    "titleAlignment": "left",
+    "logoIcon": "shopping_cart",
+    "logoImage": "",
+    "actions": [
+      {
+        "id": "search_action",
+        "icon": "search",
+        "label": "",
+        "screen": ""
+      }
+    ],
+    "search": {
+      "enabled": true,
+      "placeholder": "Search laptops",
+      "screens": [
+        "shop"
+      ]
+    }
+  },
+  "drawer": {
+    "enabled": false,
+    "headerTitle": "Laptop Luxe",
+    "headerSubtitle": "Premium laptops",
+    "headerImage": "",
+    "items": []
+  },
+  "components": {
+    "dialogBackground": "#151923",
+    "dialogButtonColor": "#A78BFA",
+    "dialogTextColor": "#B8BDCC",
+    "dialogTitleColor": "#F7F7FB",
+    "fabBackground": "#8B5CF6",
+    "fabForeground": "#FFFFFF",
+    "fontFamily": "sans-serif",
+    "inputBackground": "#1B2030",
+    "inputBorderColor": "#30384D",
+    "inputCornerRadius": 12,
+    "inputFocusColor": "#8B5CF6",
+    "inputTextColor": "#F7F7FB",
+    "menuBackground": "#151923",
+    "menuTextColor": "#F7F7FB",
+    "searchHintColor": "#858A9A",
+    "searchTextColor": "#F7F7FB",
+    "sheetBackground": "#151923",
+    "sheetItemColor": "#F7F7FB",
+    "sheetTitleColor": "#F7F7FB"
+  },
+  "isDraft": false,
+  "updatedAt": "2026-09-28T04:57:55.222Z"
+}

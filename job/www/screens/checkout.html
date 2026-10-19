@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Checkout</title>
+  <link rel="stylesheet" href="../shared/app.css" />
+</head>
+<body data-screen="checkout" data-project="app_1790570056741">
+<style>.title{padding:22px 0 16px}.title h1{margin:0 0 6px;font-size:28px}.muted{color:#A8ADBD}.form{display:grid;gap:14px}.field{display:grid;gap:7px;color:#C5C9D5;font-size:13px;font-weight:600}.field input{box-sizing:border-box;width:100%;padding:14px;border-radius:12px;border:1px solid #30384D;background:#1B2030;color:#fff;font-size:15px}.summary{margin:20px 0;padding:16px;border-radius:16px;background:#211B3A;display:flex;justify-content:space-between}.btn{width:100%}</style><div class="title"><h1>Checkout</h1><div class="muted">Almost there — where should we deliver?</div></div><form id="form" class="form"><label class="field">Full name<input id="name" required placeholder="Alex Morgan"></label><label class="field">Email address<input id="email" type="email" required placeholder="alex@example.com"></label><label class="field">Delivery address<input id="address" required placeholder="123 Market Street"></label><label class="field">City and postcode<input id="city" required placeholder="San Francisco, 94105"></label><div id="summary" class="summary"><span>Total</span><b id="total">—</b></div><button class="btn" id="place">Place order</button></form>
+  <script type="module" src="../shared/bridge.js"></script>
+  <script type="module" src="./checkout.js"></script>
+</body>
+</html>
